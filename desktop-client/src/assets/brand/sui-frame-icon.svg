@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">影岁图标</title>
+  <desc id="desc">深色圆角底座上的环形视频播放标识</desc>
+  <defs>
+    <linearGradient id="base" x1="126" y1="108" x2="896" y2="910" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111a2a" />
+      <stop offset="1" stop-color="#0a1020" />
+    </linearGradient>
+    <linearGradient id="aqua" x1="234" y1="690" x2="782" y2="236" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#91e5ea" />
+      <stop offset="0.55" stop-color="#a6e8c7" />
+      <stop offset="1" stop-color="#e1d28c" />
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#59d5d8" flood-opacity="0.28" />
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="216" fill="url(#base)" />
+  <path d="M192 702c84 82 196 126 322 126 124 0 238-49 322-130" fill="none" stroke="#2d3d59" stroke-width="26" stroke-linecap="round" />
+  <path d="M218 306c80-70 184-110 298-110 116 0 222 42 304 114" fill="none" stroke="#3c4c64" stroke-width="26" stroke-linecap="round" />
+  <circle cx="512" cy="512" r="298" fill="none" stroke="#263750" stroke-width="30" />
+  <circle cx="512" cy="512" r="220" fill="none" stroke="url(#aqua)" stroke-width="34" opacity="0.92" />
+  <path d="M356 668c-38-42-60-97-60-156 0-120 97-218 216-218 60 0 116 25 156 64" fill="none" stroke="url(#aqua)" stroke-width="34" stroke-linecap="round" opacity="0.78" />
+  <path d="M438 372v280c0 34 37 55 66 37l224-140c27-17 27-56 0-73L504 336c-29-18-66 3-66 36Z" fill="url(#aqua)" filter="url(#glow)" />
+  <path d="M624 330h92c30 0 54 24 54 54v78" fill="none" stroke="#d9d08b" stroke-width="28" stroke-linecap="round" />
+  <path d="M624 694h92c30 0 54-24 54-54v-78" fill="none" stroke="#86d6db" stroke-width="28" stroke-linecap="round" />
+  <path d="M270 440h98M270 512h82M270 584h98" stroke="#5f728f" stroke-width="26" stroke-linecap="round" opacity="0.72" />
+</svg>

@@ -1,0 +1,132 @@
+[
+  {
+    "id": "hunhepan",
+    "name": "混合盘",
+    "group": "公开页面源",
+    "kind": "hunhepan",
+    "enabled": true,
+    "description": "混合盘开放搜索接口，详情可直接得到跳转链接。",
+    "healthScore": 64,
+    "status": "ready"
+  },
+  {
+    "id": "pikasoo",
+    "name": "皮卡搜索",
+    "group": "公开页面源",
+    "kind": "pikasoo",
+    "enabled": true,
+    "description": "页面规则解析，搜索结果多数直接指向网盘链接。",
+    "healthScore": 58,
+    "status": "ready"
+  },
+  {
+    "id": "aliso",
+    "name": "阿里搜",
+    "group": "公开页面源",
+    "kind": "aliso",
+    "enabled": true,
+    "description": "页面规则解析，详情阶段尝试补充跳转信息。",
+    "healthScore": 54,
+    "status": "ready"
+  },
+  {
+    "id": "cuppaso",
+    "name": "咔帕搜索",
+    "group": "公开页面源",
+    "kind": "cuppaso",
+    "enabled": true,
+    "description": "公开页面源，详情页通常可解析到阿里、夸克或迅雷网盘链接。",
+    "healthScore": 62,
+    "status": "ready"
+  },
+  {
+    "id": "buyutu",
+    "name": "捕娱兔",
+    "group": "公开页面源",
+    "kind": "buyutu",
+    "enabled": true,
+    "description": "公开页面源，按视频类型搜索并从详情页提取网盘链接。",
+    "healthScore": 60,
+    "status": "ready"
+  },
+  {
+    "id": "xuebapan",
+    "name": "学霸盘",
+    "group": "公开页面源",
+    "kind": "xuebapan",
+    "enabled": true,
+    "description": "公开页面源，列表结构与阿里搜相近，详情页加密时会回退来源页。",
+    "healthScore": 56,
+    "status": "ready"
+  },
+  {
+    "id": "quarkso",
+    "name": "夸克搜",
+    "group": "公开页面源",
+    "kind": "quarkso",
+    "enabled": true,
+    "description": "公开夸克网盘搜索源，详情页尝试解析夸克网盘链接。",
+    "healthScore": 66,
+    "status": "ready"
+  },
+  {
+    "id": "yyurl",
+    "name": "云盘资源共享站",
+    "group": "公开页面源",
+    "kind": "yyurl",
+    "enabled": true,
+    "description": "Flarum 公开共享站，详情页提取正文中的网盘链接。",
+    "healthScore": 58,
+    "status": "ready"
+  },
+  {
+    "id": "myxiaozhan",
+    "name": "我的小站",
+    "group": "公开页面源",
+    "kind": "myxiaozhan",
+    "enabled": true,
+    "description": "Flarum 公开共享站，详情页提取正文中的网盘链接。",
+    "healthScore": 58,
+    "status": "ready"
+  },
+  {
+    "id": "panquduo",
+    "name": "盘趣多",
+    "group": "公开页面源",
+    "kind": "panquduo",
+    "enabled": true,
+    "description": "公开夸克/百度网盘搜索源，搜索页和详情页可解析目标剧资源。",
+    "healthScore": 72,
+    "status": "ready"
+  },
+  {
+    "id": "qianfan",
+    "name": "千帆",
+    "group": "需配置源",
+    "kind": "qianfan",
+    "enabled": false,
+    "description": "需要 code，默认不参与搜索。",
+    "healthScore": 50,
+    "status": "requiresConfig"
+  },
+  {
+    "id": "yiso",
+    "name": "易搜",
+    "group": "需配置源",
+    "kind": "yiso",
+    "enabled": false,
+    "description": "需要 cookie，默认不参与搜索。",
+    "healthScore": 50,
+    "status": "requiresConfig"
+  },
+  {
+    "id": "qkpanso",
+    "name": "夸克盘搜",
+    "group": "需配置源",
+    "kind": "qkpanso",
+    "enabled": false,
+    "description": "当前直接请求不稳定，默认不参与搜索。",
+    "healthScore": 45,
+    "status": "requiresConfig"
+  }
+]

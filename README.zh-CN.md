@@ -1,0 +1,88 @@
+# 影岁
+
+[English](README.md)
+
+影岁是一个本地优先的桌面端影视资源检索工具。首版面向个人使用，主要支持 Windows 与 macOS 桌面端。项目结构参考 Coscool，正式实现集中在 `desktop-client/` 与 `tauri-desktop/`，移动端和服务端暂时只保留占位目录。
+
+## 目录
+
+```text
+sui-frame/
+├── desktop-client/   # Vue 3 + TypeScript 桌面前端
+├── tauri-desktop/    # Tauri 2 桌面壳与 Rust 搜索适配器
+├── mobile-client/    # 移动端预留目录
+├── server/           # 服务端预留目录
+├── docs/             # 开发说明和搜索规则说明
+└── assets/           # 公共品牌资源
+```
+
+## 本地启动
+
+安装前端依赖：
+
+```bash
+cd desktop-client
+npm install
+```
+
+安装 Tauri 依赖并启动桌面端：
+
+```bash
+cd ../tauri-desktop
+npm install
+npm run tauri:dev
+```
+
+构建桌面端安装包：
+
+```bash
+cd tauri-desktop
+npm run tauri:build
+```
+
+`tauri:dev` 会自动启动 Vite 前端服务。开发环境下前端服务地址为 `http://127.0.0.1:5173`，Tauri 窗口会加载这个地址。
+
+## 当前能力
+
+- 首页即搜索工作台，不做登录。
+- 支持主搜索框、资源来源选择、网盘类型筛选、精确匹配和排序选项。
+- 支持影视实体识别，输入 `胡歌 生命树` 会先识别为电视剧《生命树》，再生成更准确的资源搜索词。
+- Rust 层内置搜索适配器，模型参考 `hunhepan-rule-template-main` 的 `onSearch/onInfo` 思路。
+- 资源池升级为 PanSou 深度池、CMS V10 源池、Torznab/Newznab 外部索引器、本地规则插件池四层结构。
+- PanSou 支持多个 endpoint，并可配置 `src`、频道、插件、网盘类型、缓存和刷新策略。
+- CMS V10 支持源池管理、批量导入和健康检测；连续失败源会在来源列表中降级或跳过。
+- Torznab/Newznab 只接入用户自有或有权限的索引器，执行搜索和跳转，不做下载。
+- 本地规则插件池位于 `rules/sources/*.json`，默认公开页面源已包含混合盘、皮卡搜索、阿里搜、咔帕搜索、捕娱兔、学霸盘、夸克搜、云盘资源共享站、我的小站、盘趣多。
+- 多来源并发搜索，单个来源失败不会阻塞其他来源结果。
+- 搜索后展示“来源覆盖”，按资源池类型统计返回量、失败量和禁用量，并显示目标剧网盘命中数。
+- 结果列表按“高可信资源 / 可能相关 / 低相关”分组，展示标题、文件摘要、来源、网盘类型、分享者、标签和命中原因。
+- 点击结果打开详情弹窗，展示跳转地址，并支持复制与外部浏览器打开。
+- 设置页支持配置 PanSou endpoint、CMS V10 接口列表和 TMDB API Key 预留项。
+- 图标与“音岁”呼应，保留深色圆角底座和环形动势，改为视频播放与胶片意象。
+
+## 当前边界
+
+- 首版是本地个人桌面工具，不连接私有服务器。
+- 首版不做账号系统、不做移动端、不做服务端持久化。
+- 应用不保存用户网盘账号、Cookie 或私有 Token。
+- 应用不内置随机公开 PanSou 服务地址、CMS 源、tracker 或索引器；公开页面源只做搜索、解析和跳转。
+- 应用只做资源发现、索引适配和跳转，不下载、不破解、不绕过付费、DRM 或访问控制。
+- 搜索结果依赖外部公开站点，站点改版、网络限制、反爬策略、接口下线都会影响可用性。
+- TMDB API Key 用于可选的 `search/multi` 影视候选增强；没有 Key 时仍可使用本地影视规则与资源来源。
+
+## 技术栈
+
+- Tauri 2
+- Rust
+- Vue 3
+- TypeScript
+- Vite
+- Ant Design Vue
+- Lucide Vue Next
+
+## 平台说明
+
+- Windows 和 macOS 是首版通过 Tauri 支持的桌面目标。
+- Tauri 打包目标配置为 `all`，但每个平台的安装包仍需要在对应操作系统上单独验证。
+- Windows 打包需要重点验证未签名应用提示、安装器行为和外部链接打开。
+- macOS 打包需要重点验证 DMG 安装、应用权限，以及私有环境外分发时的签名或公证。

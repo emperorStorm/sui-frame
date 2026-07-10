@@ -1,0 +1,29 @@
+[package]
+name = "sui-frame-desktop"
+version = "0.1.0"
+description = "影岁桌面客户端"
+authors = ["wangjun"]
+edition = "2021"
+
+[lib]
+name = "sui_frame_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+futures = "0.3"
+open = "5"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+roxmltree = "0.20"
+scraper = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+urlencoding = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }
