@@ -1,6 +1,6 @@
 [package]
 name = "sui-frame-desktop"
-version = "0.1.4"
+version = "0.1.5"
 description = "影岁桌面客户端"
 authors = ["wangjun"]
 edition = "2021"

@@ -88,6 +88,14 @@ function hasPreparedSidecar(file) {
   return !content.includes('PanSou sidecar placeholder')
 }
 
+function resolveGoLdflags(target) {
+  const flags = ['-s', '-w']
+  if (target.goos === 'windows') {
+    flags.push('-H=windowsgui')
+  }
+  return flags.join(' ')
+}
+
 try {
   const targetKeys = resolveTargetKeys()
   if (!targetKeys.length) {
@@ -112,7 +120,7 @@ try {
     for (const key of targetKeys) {
       const target = targets[key]
       const output = sidecarOutput(target)
-      run('go', ['build', '-trimpath', '-ldflags', '-s -w', '-o', output, '.'], {
+      run('go', ['build', '-trimpath', '-ldflags', resolveGoLdflags(target), '-o', output, '.'], {
         cwd: sourceDir,
         env: {
           ...process.env,
