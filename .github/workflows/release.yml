@@ -81,8 +81,10 @@ jobs:
         include:
           - platform: macos-latest
             args: --target aarch64-apple-darwin
+            pansou_target: darwin-arm64
           - platform: windows-latest
             args: --bundles nsis
+            pansou_target: win32-x64
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
@@ -136,7 +138,7 @@ jobs:
         working-directory: tauri-desktop
 
       - name: Prepare PanSou sidecar
-        run: npm run prepare:pansou
+        run: npm run prepare:pansou -- --target ${{ matrix.pansou_target }}
         working-directory: tauri-desktop
 
       - name: Sync release version

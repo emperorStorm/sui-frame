@@ -1,7 +1,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use futures::future::join_all;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{header, Client, Response};
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -21,6 +21,7 @@ const RULE_SOURCE_FILE: &str = "rules/sources/default.json";
 const EMBEDDED_PANSOU_SOURCE_ID: &str = "embedded-pansou";
 const EMBEDDED_PANSOU_SIDECAR: &str = "pansou-sidecar";
 const EMBEDDED_PANSOU_DEFAULT_PORT: u16 = 10323;
+const EMPTY_FOLDER_PROBE_BYTES: usize = 256 * 1024;
 const EMBEDDED_PANSOU_DEFAULT_PLUGINS: &[&str] = &[
     "labi",
     "zhizhen",
@@ -1701,11 +1702,15 @@ fn parse_pansou_items(source: &SearchSource, term: &str, data: &Value) -> Vec<Re
         data.pointer("/data/merged_by_type"),
         data.pointer("/data/results"),
         data.pointer("/data/list"),
-        data.get("data"),
     ];
     let mut output = Vec::new();
     for candidate in candidates.iter().flatten() {
-        collect_pansou_values(source, term, candidate, &mut output);
+        collect_pansou_values(source, term, candidate, "", &mut output);
+    }
+    if output.is_empty() {
+        if let Some(candidate) = data.get("data") {
+            collect_pansou_values(source, term, candidate, "", &mut output);
+        }
     }
     output
 }
@@ -1714,19 +1719,25 @@ fn collect_pansou_values(
     source: &SearchSource,
     term: &str,
     value: &Value,
+    disk_type: &str,
     output: &mut Vec<ResourceItem>,
 ) {
     match value {
         Value::Array(items) => {
             for item in items {
-                if let Some(resource) = pansou_item(source, output.len(), term, item) {
+                if let Some(resource) = pansou_item(source, output.len(), term, item, disk_type) {
                     output.push(resource);
                 }
             }
         }
         Value::Object(map) => {
-            for child in map.values() {
-                collect_pansou_values(source, term, child, output);
+            for (key, child) in map {
+                let child_disk_type = if disk_type.is_empty() {
+                    key.as_str()
+                } else {
+                    disk_type
+                };
+                collect_pansou_values(source, term, child, child_disk_type, output);
             }
         }
         _ => {}
@@ -1738,17 +1749,30 @@ fn pansou_item(
     index: usize,
     term: &str,
     value: &Value,
+    fallback_disk_type: &str,
 ) -> Option<ResourceItem> {
-    let title = first_json_string(value, &["title", "name", "disk_name", "file_name"])?;
+    let title = first_json_string(value, &["title", "name", "disk_name", "file_name", "note"])?;
     let url =
         first_json_string(value, &["url", "link", "share_url", "shareLink"]).unwrap_or_default();
     if url.is_empty() && title.is_empty() {
         return None;
     }
-    let info = first_json_string(value, &["content", "description", "info", "files"])
+    let info = first_json_string(
+        value,
+        &[
+            "content",
+            "description",
+            "info",
+            "files",
+            "note",
+            "remark",
+            "datetime",
+            "source",
+        ],
+    )
         .unwrap_or_else(|| term.to_string());
-    let disk_type =
-        first_json_string(value, &["type", "cloud_type", "disk_type"]).unwrap_or_default();
+    let disk_type = first_json_string(value, &["type", "cloud_type", "disk_type"])
+        .unwrap_or_else(|| fallback_disk_type.to_string());
     let share_user = first_json_string(value, &["user", "share_user", "owner"]).unwrap_or_default();
     Some(resource_item(
         source,
@@ -2040,7 +2064,23 @@ async fn validate_resource_url(url: &str) -> LinkValidation {
         },
     };
     let is_disk_link = has_disk_host(text);
+    let empty_folder = if matches!(status, Some(200..=399)) && is_disk_link {
+        probe_empty_folder(&client, text).await
+    } else {
+        None
+    };
+    link_validation_from_status(status, is_disk_link, empty_folder)
+}
+
+fn link_validation_from_status(
+    status: Option<u16>,
+    is_disk_link: bool,
+    empty_folder: Option<bool>,
+) -> LinkValidation {
     match status {
+        Some(200..=399) if is_disk_link && empty_folder == Some(true) => {
+            invalid_link("资源文件夹为空，已禁止打开。")
+        }
         Some(200..=399) if is_disk_link => LinkValidation {
             status: "valid".to_string(),
             can_open: true,
@@ -2068,6 +2108,114 @@ async fn validate_resource_url(url: &str) -> LinkValidation {
             message: "当前网络无法确认链接可访问性，可尝试在浏览器中打开确认。".to_string(),
         },
     }
+}
+
+async fn probe_empty_folder(client: &Client, url: &str) -> Option<bool> {
+    let response = client
+        .get(url)
+        .header(
+            header::ACCEPT,
+            "text/html,application/json,text/plain,*/*;q=0.5",
+        )
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    if let Some(content_type) = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_lowercase())
+    {
+        let readable = content_type.starts_with("text/")
+            || content_type.contains("html")
+            || content_type.contains("json")
+            || content_type.contains("xml")
+            || content_type.contains("javascript");
+        if !readable {
+            return None;
+        }
+    }
+    let text = read_limited_response_text(response, EMPTY_FOLDER_PROBE_BYTES).await?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    if looks_like_empty_folder_page(&text) {
+        return Some(true);
+    }
+    if looks_like_non_empty_folder_page(&text) {
+        return Some(false);
+    }
+    None
+}
+
+async fn read_limited_response_text(mut response: Response, max_bytes: usize) -> Option<String> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if bytes.len() >= max_bytes {
+            break;
+        }
+        let remaining = max_bytes - bytes.len();
+        if chunk.len() > remaining {
+            bytes.extend_from_slice(&chunk[..remaining]);
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn looks_like_empty_folder_page(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let normalized = text.split_whitespace().collect::<String>();
+    let markers = [
+        "文件夹为空",
+        "文件夹是空的",
+        "此文件夹为空",
+        "该文件夹为空",
+        "暂无文件",
+        "没有文件",
+        "无文件",
+        "空文件夹",
+        "目录为空",
+        "文件为空",
+    ];
+    if markers
+        .iter()
+        .any(|marker| text.contains(marker) || normalized.contains(marker))
+    {
+        return true;
+    }
+    [
+        "folder is empty",
+        "this folder is empty",
+        "empty folder",
+        "directory is empty",
+        "no files",
+        "no file found",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn looks_like_non_empty_folder_page(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let markers = [
+        "保存到网盘",
+        "转存",
+        "下载",
+        "文件列表",
+        "全部文件",
+        "share-file-list",
+        "file-list",
+        "filename",
+        "file_name",
+    ];
+    markers
+        .iter()
+        .any(|marker| text.contains(marker) || lower.contains(marker))
 }
 
 fn invalid_link(message: &str) -> LinkValidation {
@@ -4026,6 +4174,61 @@ mod tests {
     }
 
     #[test]
+    fn parses_pansou_note_items_and_parent_disk_type() {
+        let source = SearchSource {
+            id: "embedded-pansou".to_string(),
+            name: "内置 PanSou".to_string(),
+            group: "PanSou 深度池".to_string(),
+            enabled: true,
+            description: String::new(),
+            kind: "embedded-pansou".to_string(),
+            config_index: None,
+            health_score: 70,
+            status: "ready".to_string(),
+        };
+        let data = json!({
+            "code": 0,
+            "message": "success",
+            "data": {
+                "total": 2,
+                "merged_by_type": {
+                    "quark": [
+                        {
+                            "url": "https://pan.quark.cn/s/abc",
+                            "password": "",
+                            "note": "流浪地球",
+                            "datetime": "0001-01-01T00:00:00Z",
+                            "source": "plugin:wanou"
+                        }
+                    ],
+                    "magnet": [
+                        {
+                            "url": "magnet:?xt=urn:btih:abc",
+                            "note": "流浪地球 磁力资源",
+                            "source": "plugin:yuhuage"
+                        }
+                    ]
+                }
+            }
+        });
+
+        let items = parse_pansou_items(&source, "流浪地球", &data);
+
+        assert_eq!(items.len(), 2);
+        let quark = items
+            .iter()
+            .find(|item| item.disk_type == "quark")
+            .expect("quark item should be parsed");
+        let magnet = items
+            .iter()
+            .find(|item| item.disk_type == "magnet")
+            .expect("magnet item should be parsed");
+        assert_eq!(quark.title, "流浪地球");
+        assert_eq!(quark.url, "https://pan.quark.cn/s/abc");
+        assert_eq!(magnet.url, "magnet:?xt=urn:btih:abc");
+    }
+
+    #[test]
     fn classifies_detail_link_without_network_when_possible() {
         let invalid = futures::executor::block_on(validate_resource_url("ftp://example.test/file"));
         assert_eq!(invalid.status, "invalid");
@@ -4034,6 +4237,26 @@ mod tests {
         let magnet = futures::executor::block_on(validate_resource_url("magnet:?xt=urn:btih:abc"));
         assert_eq!(magnet.status, "warning");
         assert!(magnet.can_open);
+    }
+
+    #[test]
+    fn detects_empty_folder_page_markers() {
+        assert!(looks_like_empty_folder_page("该文件夹为空，暂无文件"));
+        assert!(looks_like_empty_folder_page("This folder is empty."));
+        assert!(looks_like_empty_folder_page("no files found in this folder"));
+        assert!(!looks_like_empty_folder_page("流浪地球 4K 文件列表 保存到网盘"));
+    }
+
+    #[test]
+    fn classifies_empty_folder_probe_as_invalid() {
+        let invalid = link_validation_from_status(Some(200), true, Some(true));
+        assert_eq!(invalid.status, "invalid");
+        assert!(!invalid.can_open);
+        assert_eq!(invalid.message, "资源文件夹为空，已禁止打开。");
+
+        let valid = link_validation_from_status(Some(200), true, Some(false));
+        assert_eq!(valid.status, "valid");
+        assert!(valid.can_open);
     }
 
     #[test]

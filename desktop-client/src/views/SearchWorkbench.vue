@@ -5,13 +5,13 @@
         <img src="../assets/brand/sui-frame-icon.svg" alt="影岁" />
       </div>
       <a-tooltip title="资源搜索">
-        <button class="rail-button active" type="button">
+        <button class="rail-button" :class="{ active: activeView === 'search' }" type="button" @click="activeView = 'search'">
           <Search :size="22" />
         </button>
       </a-tooltip>
-      <a-tooltip title="规则状态">
-        <button class="rail-button" type="button">
-          <Activity :size="22" />
+      <a-tooltip title="数据源配置">
+        <button class="rail-button" :class="{ active: activeView === 'sources' }" type="button" @click="activeView = 'sources'">
+          <Database :size="22" />
         </button>
       </a-tooltip>
       <div class="rail-spacer"></div>
@@ -29,195 +29,169 @@
           <img src="../assets/brand/sui-frame-icon.svg" alt="影岁" />
           <div>
             <p>影岁</p>
-            <h1>影视资源检索台</h1>
+            <h1>{{ activeView === 'search' ? '影视资源检索台' : '数据源配置' }}</h1>
           </div>
-        </div>
-        <div class="hero-meta">
-          <span>{{ enabledCount }} 个来源可用</span>
-          <span>桌面端</span>
         </div>
       </header>
 
-      <section class="search-panel">
-        <div class="search-line">
-          <a-input
-            v-model:value="query"
-            size="large"
-            placeholder="输入片名、剧名、演员或关键词"
-            allow-clear
-            @press-enter="handleSearch"
-          />
-          <a-button type="primary" size="large" :loading="loading" @click="handleSearch">
-            <template #icon><Search :size="18" /></template>
-            搜索
-          </a-button>
-        </div>
+      <section v-if="activeView === 'search'" class="search-view">
+        <section class="search-panel">
+          <div class="search-line">
+            <a-input
+              v-model:value="query"
+              size="large"
+              placeholder="输入片名、剧名、演员或关键词"
+              allow-clear
+              @press-enter="handleSearch"
+            />
+            <a-button type="primary" size="large" :loading="loading" @click="handleSearch">
+              <template #icon><Search :size="18" /></template>
+              搜索
+            </a-button>
+          </div>
+        </section>
 
-        <div class="source-groups">
-          <div v-for="group in sourceGroups" :key="group.name" class="source-group">
-            <div class="source-group-title">
-              <span>{{ group.name }}</span>
-              <small>{{ sourceGroupSummary(group) }}</small>
+        <section class="source-summary-panel" :class="{ collapsed: !sourceSummaryOpen }">
+          <button class="panel-title summary-panel-toggle" type="button" @click="sourceSummaryOpen = !sourceSummaryOpen">
+            <span>来源执行摘要</span>
+            <span class="panel-title-meta">
+              <small>{{ sourceExecutionSummary }}</small>
+              <ChevronDown class="summary-chevron" :class="{ open: sourceSummaryOpen }" :size="18" />
+            </span>
+          </button>
+          <div v-if="sourceSummaryOpen" class="source-summary-grid">
+            <article
+              v-for="group in sourceGroups"
+              :key="group.name"
+              class="source-summary-card"
+              :class="{ open: expandedSourceGroup === group.name }"
+            >
+              <button class="source-summary-trigger" type="button" @click="toggleSourceSummary(group.name)">
+                <span class="source-summary-copy">
+                  <strong>{{ group.name }}</strong>
+                  <span>{{ groupRuntimeSummary(group.name) }}</span>
+                  <small>{{ groupSelectionSummary(group) }}</small>
+                </span>
+                <ChevronDown class="summary-chevron" :class="{ open: expandedSourceGroup === group.name }" :size="18" />
+              </button>
+              <div v-if="expandedSourceGroup === group.name" class="source-summary-detail">
+                <div v-if="successfulGroupStates(group.name).length" class="source-summary-detail-list">
+                  <div v-for="state in successfulGroupStates(group.name)" :key="state.sourceId">
+                    <span>{{ state.sourceName }}</span>
+                    <strong>{{ state.count }} 条</strong>
+                  </div>
+                </div>
+                <p v-else>暂无成功返回来源</p>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <div class="output-scroll">
+          <section class="result-shell">
+            <div class="result-head">
+              <div>
+                <h2>{{ resultTitle }}</h2>
+                <p>{{ resultHint }}</p>
+                <div v-if="lastQuery" class="target-summary" :class="{ missed: targetResourceCount === 0 }">
+                  {{ targetResourceMessage }}
+                </div>
+              </div>
+              <a-button v-if="lastQuery" :disabled="loading" @click="handleSearch">
+                <template #icon><RefreshCw :size="16" /></template>
+                重新搜索
+              </a-button>
             </div>
-            <div class="source-strip">
+
+            <a-empty v-if="!loading && !items.length" description="输入关键词后开始检索" />
+
+            <div v-else class="group-list">
+              <section v-for="group in groups" :key="group.key" class="result-group">
+                <div class="group-head">
+                  <h3>{{ group.title }}</h3>
+                  <span>{{ group.items.length }} 条</span>
+                </div>
+                <div class="result-list">
+                  <article
+                    v-for="item in group.items"
+                    :key="item.id"
+                    class="result-item"
+                    @click="openDetail(item)"
+                  >
+                    <div class="result-main">
+                      <h3 v-html="highlightTitle(item.title)"></h3>
+                      <pre>{{ item.info || '暂无文件摘要' }}</pre>
+                      <div class="reason-row">
+                        <a-tag color="green">评分 {{ item.relevanceScore }}</a-tag>
+                        <a-tag v-for="reason in item.matchReasons.slice(0, 4)" :key="`${item.id}-${reason}`">{{ reason }}</a-tag>
+                      </div>
+                      <div class="tag-row">
+                        <a-tag color="cyan">{{ item.sourceName }}</a-tag>
+                        <a-tag v-if="item.diskType">{{ item.diskType }}</a-tag>
+                        <a-tag v-if="item.shareUser">{{ item.shareUser }}</a-tag>
+                        <a-tag v-for="tag in item.tags.slice(0, 3)" :key="`${item.id}-${tag}`">{{ tag }}</a-tag>
+                      </div>
+                    </div>
+                    <button class="detail-button" type="button">
+                      <Film :size="18" />
+                      详情
+                    </button>
+                  </article>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section v-else class="source-config-view">
+        <div class="source-config-head">
+          <div>
+            <h2>数据源配置</h2>
+            <p>默认启用所有可用来源，搜索页会直接使用这里的来源集合。</p>
+          </div>
+          <div class="source-config-actions">
+            <span>{{ selectedEnabledCount }} / {{ enabledCount }} 已选</span>
+            <a-button :disabled="loading" @click="selectAllSources">全选可用</a-button>
+            <a-button :disabled="loading" @click="clearSelectedSources">清空</a-button>
+          </div>
+        </div>
+        <div class="source-config-groups">
+          <section v-for="group in sourceGroups" :key="group.name" class="source-config-group">
+            <div class="source-config-group-head">
+              <div>
+                <h3>{{ group.name }}</h3>
+                <p>{{ groupSelectionSummary(group) }}</p>
+              </div>
+            </div>
+            <div class="source-config-grid">
               <button
                 v-for="source in group.sources"
                 :key="source.id"
-                class="source-chip"
+                class="source-config-card"
                 :class="{ selected: selectedSourceIds.includes(source.id), disabled: !source.enabled, configurable: source.status === 'requiresConfig' }"
                 type="button"
                 :disabled="!source.enabled || loading"
                 @click="toggleSource(source.id)"
               >
-                <span>{{ source.name }}</span>
-                <small>{{ sourceLabel(source) }}</small>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="filter-row">
-          <a-select v-model:value="sortOrder" class="filter-select" :disabled="loading">
-            <a-select-option value="relevance">综合排序</a-select-option>
-            <a-select-option value="source">按来源归组</a-select-option>
-          </a-select>
-          <a-select v-model:value="diskType" class="filter-select" :disabled="loading">
-            <a-select-option value="all">全部网盘</a-select-option>
-            <a-select-option value="quark">夸克</a-select-option>
-            <a-select-option value="aliyun">阿里</a-select-option>
-            <a-select-option value="baidu">百度</a-select-option>
-          </a-select>
-          <a-checkbox v-model:checked="exactMatch" :disabled="loading">精确匹配</a-checkbox>
-          <a-button :disabled="loading" @click="resetFilters">
-            <template #icon><RefreshCw :size="16" /></template>
-            重置
-          </a-button>
-        </div>
-      </section>
-
-      <div class="output-scroll">
-      <section class="status-board" v-if="states.length">
-        <div
-          v-for="state in states"
-          :key="state.sourceId"
-          class="status-card"
-          :class="state.status"
-        >
-          <CheckCircle2 v-if="state.status === 'success'" :size="18" />
-          <CircleAlert v-else-if="state.status === 'failed'" :size="18" />
-          <LoaderCircle v-else-if="loading" class="spin" :size="18" />
-          <Activity v-else :size="18" />
-          <span>{{ state.sourceName }}</span>
-          <small>{{ statusMessage(state) }}</small>
-        </div>
-      </section>
-
-      <section v-if="coverage.length" class="coverage-panel">
-        <div class="coverage-head">
-          <div>
-            <h2>来源覆盖</h2>
-            <p>按资源池类型统计本次召回广度和失败情况</p>
-          </div>
-          <span>{{ coverage.reduce((sum, item) => sum + item.count, 0) }} 条召回</span>
-        </div>
-        <div class="coverage-grid">
-          <article v-for="item in coverage" :key="item.group" class="coverage-card">
-            <div>
-              <strong>{{ item.group }}</strong>
-              <small>{{ item.message }}</small>
-            </div>
-            <div class="coverage-meter">
-              <span :style="{ width: `${coverageRate(item)}%` }"></span>
-            </div>
-          </article>
-        </div>
-      </section>
-
-      <section v-if="searchPlan" class="plan-panel">
-        <div class="candidate-area">
-          <div class="panel-title">
-            <span>识别到的影视条目</span>
-            <small>{{ searchPlan.originalQuery }}</small>
-          </div>
-          <div class="candidate-list">
-            <button
-              v-for="candidate in searchPlan.candidates"
-              :key="candidate.id"
-              class="candidate-card"
-              :class="{ active: candidate.id === searchPlan.activeCandidateId }"
-              type="button"
-            >
-              <strong>{{ candidate.title }}</strong>
-              <span>{{ candidate.mediaType }} {{ candidate.year }}</span>
-              <small>{{ candidate.actors.join(' / ') || candidate.source }}</small>
-            </button>
-          </div>
-        </div>
-        <div class="term-area">
-          <div class="panel-title">
-            <span>实际资源搜索词</span>
-            <small>自动降噪</small>
-          </div>
-          <div class="term-list">
-            <a-tag v-for="term in searchPlan.searchTerms" :key="term" color="blue">{{ term }}</a-tag>
-          </div>
-        </div>
-      </section>
-
-      <section class="result-shell">
-        <div class="result-head">
-          <div>
-            <h2>{{ resultTitle }}</h2>
-            <p>{{ resultHint }}</p>
-            <div v-if="lastQuery" class="target-summary" :class="{ missed: targetResourceCount === 0 }">
-              {{ targetResourceMessage }}
-            </div>
-          </div>
-          <a-button v-if="lastQuery" :disabled="loading" @click="handleSearch">
-            <template #icon><RefreshCw :size="16" /></template>
-            重新搜索
-          </a-button>
-        </div>
-
-        <a-empty v-if="!loading && !items.length" description="输入关键词后开始检索" />
-
-        <div v-else class="group-list">
-          <section v-for="group in groups" :key="group.key" class="result-group">
-            <div class="group-head">
-              <h3>{{ group.title }}</h3>
-              <span>{{ group.items.length }} 条</span>
-            </div>
-            <div class="result-list">
-              <article
-                v-for="item in group.items"
-                :key="item.id"
-                class="result-item"
-                @click="openDetail(item)"
-              >
-                <div class="result-main">
-                  <h3 v-html="highlightTitle(item.title)"></h3>
-                  <pre>{{ item.info || '暂无文件摘要' }}</pre>
-                  <div class="reason-row">
-                    <a-tag color="green">评分 {{ item.relevanceScore }}</a-tag>
-                    <a-tag v-for="reason in item.matchReasons.slice(0, 4)" :key="`${item.id}-${reason}`">{{ reason }}</a-tag>
-                  </div>
-                  <div class="tag-row">
-                    <a-tag color="cyan">{{ item.sourceName }}</a-tag>
-                    <a-tag v-if="item.diskType">{{ item.diskType }}</a-tag>
-                    <a-tag v-if="item.shareUser">{{ item.shareUser }}</a-tag>
-                    <a-tag v-for="tag in item.tags.slice(0, 3)" :key="`${item.id}-${tag}`">{{ tag }}</a-tag>
+                <span class="source-check" :class="{ selected: selectedSourceIds.includes(source.id), disabled: !source.enabled }">
+                  <CheckCircle2 v-if="selectedSourceIds.includes(source.id)" :size="16" />
+                  <CircleAlert v-else-if="!source.enabled" :size="16" />
+                </span>
+                <div>
+                  <strong>{{ source.name }}</strong>
+                  <small>{{ sourceLabel(source) }}</small>
+                  <p>{{ source.description }}</p>
+                  <div class="source-card-meta">
+                    <span>健康 {{ source.healthScore || 0 }}</span>
+                    <span>{{ source.kind }}</span>
                   </div>
                 </div>
-                <button class="detail-button" type="button">
-                  <Film :size="18" />
-                  详情
-                </button>
-              </article>
+              </button>
             </div>
           </section>
         </div>
       </section>
-      </div>
     </section>
 
     <a-modal
@@ -474,8 +448,10 @@ import { message, Modal } from 'ant-design-vue'
 import {
   Activity,
   CheckCircle2,
+  ChevronDown,
   CircleAlert,
   Clipboard,
+  Database,
   ExternalLink,
   Film,
   LoaderCircle,
@@ -510,10 +486,8 @@ import {
   type ResourceDetail,
   type ResourceItem,
   type ResultGroup,
-  type SearchPlan,
   type SearchSettings,
   type SearchSource,
-  type SourceCoverage,
   type SourceSearchState,
   type UpdateCheckResult
 } from '../api/native'
@@ -603,19 +577,17 @@ const detailLoading = ref(false)
 const detailOpen = ref(false)
 const settingsOpen = ref(false)
 const settingsSaving = ref(false)
-const exactMatch = ref(false)
-const sortOrder = ref('relevance')
-const diskType = ref('all')
+const activeView = ref<'search' | 'sources'>('search')
+const sourceSummaryOpen = ref(false)
+const expandedSourceGroup = ref('')
 const sources = ref<SearchSource[]>([])
 const selectedSourceIds = ref<string[]>([])
 const items = ref<ResourceItem[]>([])
 const groups = ref<ResultGroup[]>([])
 const states = ref<SourceSearchState[]>([])
-const coverage = ref<SourceCoverage[]>([])
 const targetResourceCount = ref(0)
 const targetResourceMessage = ref('')
 const detail = ref<ResourceDetail>()
-const searchPlan = ref<SearchPlan>()
 const settingsForm = ref<EditableSearchSettings>(cloneSettings(DEFAULT_SETTINGS))
 const cmsImportText = ref('')
 const cmsTesting = ref(false)
@@ -629,6 +601,18 @@ const updateProgress = ref(0)
 const updateStatus = ref('可手动检查 OSS 稳定通道中的新版本')
 
 const enabledCount = computed(() => sources.value.filter((source) => source.enabled).length)
+const selectedEnabledCount = computed(() => {
+  const selected = new Set(selectedSourceIds.value)
+  return sources.value.filter((source) => source.enabled && selected.has(source.id)).length
+})
+const totalReturnedCount = computed(() => states.value.reduce((sum, state) => sum + state.count, 0))
+const successSourceCount = computed(() => states.value.filter((state) => state.status === 'success').length)
+const failedSourceCount = computed(() => states.value.filter((state) => state.status === 'failed').length)
+const sourceExecutionSummary = computed(() => {
+  if (loading.value) return '正在并发检索已选来源'
+  if (!lastQuery.value) return '搜索后会在这里汇总各来源返回数量'
+  return `成功 ${successSourceCount.value} 个，失败 ${failedSourceCount.value} 个，返回 ${totalReturnedCount.value} 条`
+})
 const embeddedPansouEndpoint = computed(() => `http://127.0.0.1:${settingsForm.value.embeddedPansou.port || 10323}`)
 const sourceGroups = computed(() => {
   const order = ['内置聚合源', '公开页面源', '需配置源', 'PanSou 深度池', 'CMS 源池', '外部索引器']
@@ -650,8 +634,8 @@ const sourceGroups = computed(() => {
 const resultTitle = computed(() => lastQuery.value ? `“${lastQuery.value}” 的匹配资源` : '资源结果')
 const resultHint = computed(() => {
   if (loading.value) return '正在并发检索已启用来源'
-  if (!lastQuery.value) return '支持多来源聚合，单个来源失败不影响其他结果'
-  return `共 ${items.value.length} 条结果，目标剧命中 ${targetResourceCount.value} 条，${states.value.filter((state) => state.status === 'failed').length} 个来源失败`
+  if (!lastQuery.value) return '输入关键词后按默认策略聚合可用来源'
+  return `共 ${items.value.length} 条结果，${sourceExecutionSummary.value}`
 })
 
 onMounted(async () => {
@@ -748,13 +732,6 @@ function toggleSource(sourceId: string) {
   selectedSourceIds.value = [...selectedSourceIds.value, sourceId]
 }
 
-function resetFilters() {
-  diskType.value = 'all'
-  sortOrder.value = 'relevance'
-  exactMatch.value = false
-  selectedSourceIds.value = sources.value.filter((source) => source.enabled).map((source) => source.id)
-}
-
 async function handleSearch() {
   const text = query.value.trim()
   if (!text) {
@@ -787,18 +764,16 @@ async function handleSearch() {
   try {
     const response = await searchResources(text, 1, {
       sourceIds: selectedSourceIds.value,
-      diskType: diskType.value,
-      sortOrder: sortOrder.value,
-      exactMatch: exactMatch.value,
+      diskType: 'all',
+      sortOrder: 'relevance',
+      exactMatch: false,
       settings: serializeSettings(settingsForm.value)
     })
     items.value = response.items
     groups.value = response.groups
     states.value = response.states
-    coverage.value = response.coverage
     targetResourceCount.value = response.targetResourceCount
     targetResourceMessage.value = response.targetResourceMessage
-    searchPlan.value = response.searchPlan
   } catch (error) {
     message.error(String(error))
   } finally {
@@ -809,28 +784,40 @@ async function handleSearch() {
 function sourceLabel(source: SearchSource) {
   if (source.status === 'requiresConfig') return '需配置'
   if (!source.enabled) return '暂不可用'
-  return source.group
+  return selectedSourceIds.value.includes(source.id) ? '已启用' : '未启用'
 }
 
-function sourceGroupSummary(group: { name: string; sources: SearchSource[] }) {
-  if (!lastQuery.value || !states.value.length) {
-    return `${group.sources.filter((source) => source.enabled).length} / ${group.sources.length}`
-  }
-  const groupStates = states.value.filter((state) => state.group === group.name)
+function selectAllSources() {
+  selectedSourceIds.value = sources.value.filter((source) => source.enabled).map((source) => source.id)
+}
+
+function clearSelectedSources() {
+  selectedSourceIds.value = []
+}
+
+function groupSelectionSummary(group: { name: string; sources: SearchSource[] }) {
+  const selected = new Set(selectedSourceIds.value)
+  const enabledSources = group.sources.filter((source) => source.enabled)
+  const selectedCount = enabledSources.filter((source) => selected.has(source.id)).length
+  return `已选 ${selectedCount} / 可用 ${enabledSources.length}`
+}
+
+function toggleSourceSummary(groupName: string) {
+  expandedSourceGroup.value = expandedSourceGroup.value === groupName ? '' : groupName
+}
+
+function successfulGroupStates(groupName: string) {
+  return states.value.filter((state) => state.group === groupName && state.status === 'success' && state.count > 0)
+}
+
+function groupRuntimeSummary(groupName: string) {
+  const groupStates = states.value.filter((state) => state.group === groupName)
+  if (!lastQuery.value || !groupStates.length) return '等待搜索'
   const count = groupStates.reduce((sum, state) => sum + state.count, 0)
+  const success = groupStates.filter((state) => state.status === 'success').length
   const failed = groupStates.filter((state) => state.status === 'failed').length
-  if (loading.value) {
-    return `已返回 ${count} 条`
-  }
-  return failed ? `返回 ${count} 条，失败 ${failed} 个` : `返回 ${count} 条`
-}
-
-function statusMessage(state: SourceSearchState) {
-  if (loading.value && state.status === 'empty') return '正在检索'
-  if (state.status === 'success') return '资源可访问'
-  if (state.status === 'failed') return '资源暂时无法访问，请稍后重试'
-  if (state.status === 'disabled') return '来源未启用'
-  return '未返回匹配结果'
+  if (loading.value) return `已返回 ${count} 条`
+  return failed ? `成功 ${success}，返回 ${count} 条，失败 ${failed}` : `成功 ${success}，返回 ${count} 条`
 }
 
 async function openDetail(item: ResourceItem) {
@@ -1010,11 +997,6 @@ function removeIndexer(index: number) {
   settingsForm.value.indexers.splice(index, 1)
 }
 
-function coverageRate(item: SourceCoverage) {
-  if (!item.total) return 0
-  return Math.max(8, Math.round((item.success / item.total) * 100))
-}
-
 function toEditableSettings(settings: SearchSettings): EditableSearchSettings {
   const embeddedPansou = settings.embeddedPansou || DEFAULT_SETTINGS.embeddedPansou
   return {
@@ -1186,7 +1168,7 @@ function escapeHtml(text: string) {
 
 .stage {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   min-width: 0;
   min-height: 0;
@@ -1228,21 +1210,7 @@ function escapeHtml(text: string) {
   letter-spacing: 0;
 }
 
-.hero-meta {
-  display: flex;
-  gap: 10px;
-}
-
-.hero-meta span {
-  padding: 8px 12px;
-  color: #dce8f0;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-}
-
 .search-panel,
-.plan-panel,
 .result-shell {
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid #e2e9ee;
@@ -1252,6 +1220,22 @@ function escapeHtml(text: string) {
 
 .search-panel {
   padding: 24px;
+}
+
+.search-view,
+.source-config-view {
+  display: grid;
+  gap: 16px;
+  min-height: 0;
+}
+
+.search-view {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.source-config-view {
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .output-scroll {
@@ -1272,252 +1256,35 @@ function escapeHtml(text: string) {
   font-size: 18px;
 }
 
-.source-groups {
-  display: grid;
-  gap: 14px;
-  padding: 20px 0 12px;
-}
-
-.source-group {
-  display: grid;
-  gap: 8px;
-}
-
-.source-group-title {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  color: #718196;
-  font-size: 13px;
-}
-
-.source-group-title span {
-  color: #334155;
-  font-weight: 700;
-}
-
-.source-group-title small {
-  flex: 0 0 auto;
-}
-
-.source-strip {
-  display: flex;
-  gap: 10px;
-  overflow-x: auto;
-}
-
-.source-chip {
-  display: inline-flex;
-  flex: 0 0 auto;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 112px;
-  padding: 10px 14px;
-  text-align: left;
-  color: #596878;
-  background: #f0f4f6;
-  border: 1px solid #e2e8ee;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.source-chip span {
-  color: #1f2933;
-  font-weight: 700;
-}
-
-.source-chip small {
-  font-size: 12px;
-}
-
-.source-chip.selected {
-  background: #e6f8f5;
-  border-color: #82d3c9;
-}
-
-.source-chip.disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.source-chip.configurable {
-  background: #f7f2e6;
-  border-color: #ead59b;
-}
-
-.filter-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  padding-top: 10px;
-}
-
-.filter-select {
-  width: 150px;
-}
-
-.status-board {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  margin: 16px 0;
-}
-
-.status-card {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid #e2e9ee;
-  border-radius: 8px;
-}
-
-.status-card small {
-  grid-column: 2;
-  color: #718196;
-}
-
-.status-card.success {
-  color: #0a8f8a;
-}
-
-.status-card.failed {
-  color: #d64848;
-}
-
-.coverage-panel {
-  margin: 16px 0;
-  padding: 18px;
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid #e2e9ee;
-  border-radius: 8px;
-  box-shadow: 0 18px 46px rgba(25, 39, 56, 0.1);
-}
-
-.coverage-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 14px;
-}
-
-.coverage-head h2 {
-  margin: 0 0 5px;
-  font-size: 20px;
-}
-
-.coverage-head p,
-.coverage-card small {
-  margin: 0;
-  color: #718196;
-}
-
-.coverage-head > span {
-  flex: 0 0 auto;
-  padding: 7px 10px;
-  color: #0a6f6b;
-  background: #e6f8f5;
-  border: 1px solid #bce7e1;
-  border-radius: 8px;
-}
-
-.coverage-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 12px;
-}
-
-.coverage-card {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  background: #f7fafb;
-  border: 1px solid #e2e9ee;
-  border-radius: 8px;
-}
-
-.coverage-card strong {
-  display: block;
-  margin-bottom: 4px;
-}
-
-.coverage-meter {
-  height: 7px;
-  overflow: hidden;
-  background: #e5edf1;
-  border-radius: 999px;
-}
-
-.coverage-meter span {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, #2bb8a8, #e8c770);
-}
-
-.plan-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: 18px;
-  margin: 16px 0;
-  padding: 18px;
-}
-
 .panel-title {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   align-items: center;
-  margin-bottom: 12px;
+  width: 100%;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
 }
 
-.panel-title span {
+.panel-title > span:first-child {
   font-size: 16px;
   font-weight: 700;
+}
+
+.panel-title-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .panel-title small {
   color: #718196;
 }
 
-.candidate-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px;
-}
-
-.candidate-card {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-height: 92px;
-  padding: 12px;
-  text-align: left;
-  color: #536274;
-  background: #f5f8fa;
-  border: 1px solid #e2e9ee;
-  border-radius: 8px;
-}
-
-.candidate-card.active {
-  background: #e6f8f5;
-  border-color: #82d3c9;
-}
-
-.candidate-card strong {
-  color: #1f2933;
-  font-size: 17px;
-}
-
-.candidate-card small {
-  color: #718196;
-}
-
-.term-list,
 .reason-row {
   display: flex;
   flex-wrap: wrap;
@@ -1526,6 +1293,274 @@ function escapeHtml(text: string) {
 
 .result-shell {
   padding: 22px 24px;
+}
+
+.source-summary-panel,
+.source-config-group {
+  padding: 18px 20px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #e2e9ee;
+  border-radius: 8px;
+  box-shadow: 0 18px 46px rgba(25, 39, 56, 0.08);
+}
+
+.source-summary-panel.collapsed {
+  padding-bottom: 18px;
+}
+
+.source-summary-grid,
+.source-config-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.source-summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  margin-top: 12px;
+}
+
+.source-summary-card {
+  overflow: hidden;
+  background: #f8fbfc;
+  border: 1px solid #e3ebf0;
+  border-radius: 8px;
+}
+
+.source-summary-trigger {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.source-summary-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.source-summary-copy strong {
+  color: #10202b;
+  font-size: 16px;
+}
+
+.source-summary-copy span {
+  color: #0f9489;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.source-summary-copy small {
+  color: #718196;
+}
+
+.summary-chevron {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: #7a8796;
+  transition: transform 0.18s ease;
+}
+
+.summary-chevron.open {
+  transform: rotate(180deg);
+}
+
+.source-summary-detail {
+  padding: 0 14px 14px;
+}
+
+.source-summary-detail-list {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: #ffffff;
+  border: 1px solid #e3ebf0;
+  border-radius: 8px;
+}
+
+.source-summary-detail-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #334155;
+}
+
+.source-summary-detail p {
+  margin: 0;
+  padding: 12px;
+  color: #718196;
+}
+
+.source-config-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.source-config-head h2 {
+  margin: 0 0 6px;
+  font-size: 24px;
+}
+
+.source-config-head p {
+  margin: 0;
+  color: #718196;
+}
+
+.source-config-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.source-config-actions > span {
+  padding: 8px 12px;
+  color: #0a6f6b;
+  background: #e6f8f5;
+  border: 1px solid #bce7e1;
+  border-radius: 8px;
+  font-weight: 700;
+}
+
+.source-config-groups {
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+
+.source-config-group {
+  display: grid;
+  gap: 14px;
+}
+
+.source-config-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.source-config-group-head h3 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.source-config-group-head p {
+  margin: 0;
+  color: #718196;
+}
+
+.source-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.source-config-card {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px;
+  text-align: left;
+  color: #334155;
+  background: #f7fafb;
+  border: 1px solid #e3ebf0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.source-config-card:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: #9fdad4;
+  box-shadow: 0 16px 34px rgba(24, 61, 74, 0.08);
+}
+
+.source-config-card.selected {
+  background: #eefaf8;
+  border-color: #9de1d9;
+}
+
+.source-config-card.configurable {
+  background: #f9f5ea;
+  border-color: #ead59b;
+}
+
+.source-config-card.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.source-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 2px;
+  border-radius: 999px;
+  border: 1px solid #cfd9e1;
+  color: transparent;
+}
+
+.source-check.selected {
+  color: #0f9489;
+  border-color: #0f9489;
+  background: #e6f8f5;
+}
+
+.source-check.disabled {
+  color: #c89c3b;
+  border-color: #ead59b;
+  background: #fff7e8;
+}
+
+.source-config-card strong,
+.source-config-card small,
+.source-config-card p {
+  display: block;
+}
+
+.source-config-card strong {
+  color: #10202b;
+  font-size: 17px;
+}
+
+.source-config-card small {
+  margin-top: 4px;
+  color: #0a6f6b;
+  font-weight: 700;
+}
+
+.source-config-card p {
+  margin: 10px 0 0;
+  color: #718196;
+  line-height: 1.5;
+}
+
+.source-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.source-card-meta span {
+  padding: 4px 8px;
+  color: #5c6b7d;
+  background: #edf3f7;
+  border-radius: 999px;
+  font-size: 12px;
 }
 
 .result-head {
@@ -1984,7 +2019,8 @@ function escapeHtml(text: string) {
     grid-template-columns: 1fr;
   }
 
-  .plan-panel {
+  .source-summary-grid,
+  .source-config-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1992,7 +2028,7 @@ function escapeHtml(text: string) {
     grid-template-columns: 1fr;
   }
 
-  .coverage-head,
+  .source-config-head,
   .settings-section-head {
     flex-direction: column;
   }

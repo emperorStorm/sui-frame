@@ -1,12 +1,14 @@
 {
   "name": "sui-frame-tauri-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "cd ../desktop-client && npm run dev",
     "build:web": "cd ../desktop-client && npm run build",
     "prepare:pansou": "node scripts/prepare-pansou-sidecar.mjs",
+    "prepare:pansou:win-x64": "node scripts/prepare-pansou-sidecar.mjs --target win32-x64",
+    "prepare:pansou:all": "node scripts/prepare-pansou-sidecar.mjs --target all",
     "tauri": "tauri",
     "tauri:dev": "npm run prepare:pansou && tauri dev",
     "tauri:build": "npm run prepare:pansou && npm run build:web && tauri build"
