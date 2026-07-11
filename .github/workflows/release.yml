@@ -96,7 +96,7 @@ jobs:
           missing=()
           required=(ALIYUN_OSS_BASE_URL ALIYUN_OSS_BUCKET ALIYUN_OSS_ENDPOINT TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD)
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            required+=(APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD APPLE_SIGNING_IDENTITY)
+            apple_optional=(APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD APPLE_SIGNING_IDENTITY)
           fi
           for name in "${required[@]}"; do
             if [[ -z "${!name}" ]]; then
@@ -106,6 +106,17 @@ jobs:
           if (( ${#missing[@]} > 0 )); then
             printf 'Missing GitHub Actions config: %s\n' "${missing[*]}"
             exit 1
+          fi
+          if (( ${#apple_optional[@]} > 0 )); then
+            missing_apple=()
+            for name in "${apple_optional[@]}"; do
+              if [[ -z "${!name}" ]]; then
+                missing_apple+=("$name")
+              fi
+            done
+            if (( ${#missing_apple[@]} > 0 )); then
+              printf 'Apple signing/notarization config is incomplete, continuing without macOS notarization: %s\n' "${missing_apple[*]}"
+            fi
           fi
         env:
           ALIYUN_OSS_BASE_URL: ${{ vars.ALIYUN_OSS_BASE_URL }}
