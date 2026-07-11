@@ -177,6 +177,9 @@ export interface ResourceDetail {
   title: string
   url: string
   sourceName: string
+  diskType: string
+  linkType: 'cloud' | 'magnet' | 'download' | 'web' | string
+  linkTypeLabel: string
   message: string
   validationStatus: 'valid' | 'warning' | 'invalid'
   canOpen: boolean
@@ -290,6 +293,14 @@ export function getEmbeddedPansouStatus() {
 
 export function restartEmbeddedPansou(settings: SearchSettings) {
   return invoke<EmbeddedPansouStatus>('restart_embedded_pansou', { settings })
+}
+
+export function startEmbeddedPansou(settings: SearchSettings) {
+  return invoke<EmbeddedPansouStatus>('start_embedded_pansou', { settings })
+}
+
+export function stopEmbeddedPansou(settings: SearchSettings) {
+  return invoke<EmbeddedPansouStatus>('stop_embedded_pansou', { settings })
 }
 
 export function importCmsSources(text: string, settings: SearchSettings) {

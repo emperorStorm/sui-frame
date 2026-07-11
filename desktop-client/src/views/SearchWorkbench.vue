@@ -23,7 +23,6 @@
           />
         </label>
         <a-button type="primary" size="large" :loading="loginLoading" @click="handleLogin">
-          <template #icon><LogIn :size="18" /></template>
           登录
         </a-button>
       </div>
@@ -56,7 +55,7 @@
       </a-tooltip>
       <div class="rail-spacer"></div>
       <AppNotificationCenter />
-      <a-tooltip :title="appVersion ? `桌面端 v${appVersion}` : '桌面端'">
+      <a-tooltip title="设置">
         <button class="rail-button" type="button" @click="openSettingsPanel">
           <Settings :size="22" />
         </button>
@@ -142,14 +141,10 @@
               <div>
                 <h2>{{ resultTitle }}</h2>
                 <p>{{ resultHint }}</p>
-                <div v-if="lastQuery" class="target-summary" :class="{ missed: targetResourceCount === 0 }">
+                <div v-if="!loading && targetResourceMessage" class="target-summary" :class="{ missed: targetResourceCount === 0 }">
                   {{ targetResourceMessage }}
                 </div>
               </div>
-              <a-button v-if="lastQuery" :disabled="loading" @click="handleSearch">
-                <template #icon><RefreshCw :size="16" /></template>
-                重新搜索
-              </a-button>
             </div>
 
             <section v-if="loading" class="search-loading-panel">
@@ -194,7 +189,9 @@
                       </div>
                       <div class="tag-row">
                         <a-tag color="cyan">{{ item.sourceName }}</a-tag>
-                        <a-tag v-if="item.diskType">{{ item.diskType }}</a-tag>
+                        <a-tag v-if="isMagnetResource(item)" color="orange">磁力链接</a-tag>
+                        <a-tag v-else-if="isCloudResource(item)" color="blue">云盘链接</a-tag>
+                        <a-tag v-if="item.diskType && !isMagnetResource(item)">{{ formatDiskType(item.diskType) }}</a-tag>
                         <a-tag v-if="item.shareUser">{{ item.shareUser }}</a-tag>
                         <a-tag v-for="tag in item.tags.slice(0, 3)" :key="`${item.id}-${tag}`">{{ tag }}</a-tag>
                       </div>
@@ -253,7 +250,9 @@
                 <a :href="favorite.url" target="_blank" rel="noreferrer">{{ favorite.url }}</a>
                 <div class="tag-row">
                   <a-tag color="cyan">{{ favorite.sourceName || '未知来源' }}</a-tag>
-                  <a-tag v-if="favorite.diskType">{{ favorite.diskType }}</a-tag>
+                  <a-tag v-if="isMagnetFavorite(favorite)" color="orange">磁力链接</a-tag>
+                  <a-tag v-else-if="isCloudDiskType(favorite.diskType)" color="blue">云盘链接</a-tag>
+                  <a-tag v-if="favorite.diskType && !isMagnetFavorite(favorite)">{{ formatDiskType(favorite.diskType) }}</a-tag>
                   <a-tag v-if="favorite.shareUser">{{ favorite.shareUser }}</a-tag>
                   <a-tag>{{ formatFavoriteTime(favorite.createdAt) }}</a-tag>
                 </div>
@@ -296,6 +295,17 @@
                 <h3>{{ group.name }}</h3>
                 <p>{{ groupSelectionSummary(group) }}</p>
               </div>
+              <a-button
+                v-if="group.name === '内置聚合源'"
+                :type="embeddedPansouStatus?.running ? 'default' : 'primary'"
+                :danger="embeddedPansouStatus?.running"
+                :loading="embeddedPansouRestarting"
+                :disabled="embeddedPansouServiceDisabled"
+                @click="handleToggleEmbeddedPansou"
+              >
+                <template #icon><Power :size="16" /></template>
+                {{ embeddedPansouServiceActionText }}
+              </a-button>
             </div>
             <div class="source-config-grid">
               <button
@@ -372,12 +382,6 @@
             <div>
               <h3>内置 PanSou</h3>
               <p>{{ embeddedPansouStatus?.message || '随影岁启动的本地聚合搜索服务。' }}</p>
-            </div>
-            <div class="settings-actions">
-              <a-button :loading="embeddedPansouRestarting" @click="handleRestartEmbeddedPansou">
-                <template #icon><RefreshCw :size="16" /></template>
-                重启
-              </a-button>
             </div>
           </div>
           <div class="embedded-pansou-panel">
@@ -555,7 +559,11 @@
       </div>
       <div v-else-if="detail" class="detail-box">
         <h3>{{ detail.title }}</h3>
-        <a :href="detail.url" target="_blank" rel="noreferrer">{{ detail.url }}</a>
+        <div class="detail-meta">
+          <span>链接类型：{{ detail.linkTypeLabel || '网页链接' }}</span>
+          <span v-if="detail.diskType">资源类型：{{ formatDiskType(detail.diskType) }}</span>
+        </div>
+        <a class="detail-url" :href="detail.url" target="_blank" rel="noreferrer">{{ detail.url }}</a>
         <p v-if="detail.message">{{ detail.message }}</p>
         <div class="detail-validation" :class="detail.validationStatus">
           {{ detail.validationMessage }}
@@ -589,9 +597,9 @@ import {
   ExternalLink,
   Film,
   LoaderCircle,
-  LogIn,
   LogOut,
   Plus,
+  Power,
   RefreshCw,
   Search,
   Settings,
@@ -614,9 +622,10 @@ import {
   loginUser,
   openExternalUrl,
   removeFavorite,
-  restartEmbeddedPansou,
   saveSearchSettings,
   searchResources,
+  startEmbeddedPansou,
+  stopEmbeddedPansou,
   testCmsSources,
   type CmsHealthResult,
   type CmsSourceConfig,
@@ -684,7 +693,7 @@ const DEFAULT_EMBEDDED_PANSOU_PLUGINS = [
 const DEFAULT_SETTINGS: EditableSearchSettings = {
   embeddedPansou: {
     enabled: true,
-    autoStart: true,
+    autoStart: false,
     port: 10323,
     src: 'all',
     channels: [],
@@ -713,6 +722,8 @@ const DEFAULT_SETTINGS: EditableSearchSettings = {
   tmdbApiKey: ''
 }
 
+const EMBEDDED_PANSOU_SOURCE_ID = 'embedded-pansou'
+
 const query = ref('')
 const lastQuery = ref('')
 const loading = ref(false)
@@ -733,6 +744,7 @@ const groups = ref<ResultGroup[]>([])
 const states = ref<SourceSearchState[]>([])
 const targetResourceCount = ref(0)
 const targetResourceMessage = ref('')
+const searchElapsedMs = ref(0)
 const detail = ref<ResourceDetail>()
 const currentUser = ref<UserSession>()
 const loginForm = ref({ username: 'admin', password: '123456' })
@@ -761,9 +773,15 @@ const failedSourceCount = computed(() => states.value.filter((state) => state.st
 const sourceExecutionSummary = computed(() => {
   if (loading.value) return '正在并发检索已选来源'
   if (!lastQuery.value) return '搜索后会在这里汇总各来源返回数量'
-  return `成功 ${successSourceCount.value} 个，失败 ${failedSourceCount.value} 个，返回 ${totalReturnedCount.value} 条`
+  const baseSummary = `成功 ${successSourceCount.value} 个，失败 ${failedSourceCount.value} 个，返回 ${totalReturnedCount.value} 条`
+  const elapsedText = formatElapsedSeconds(searchElapsedMs.value)
+  return elapsedText ? `${baseSummary}，耗时 ${elapsedText}` : baseSummary
 })
 const embeddedPansouEndpoint = computed(() => `http://127.0.0.1:${settingsForm.value.embeddedPansou.port || 10323}`)
+const embeddedPansouServiceActionText = computed(() => embeddedPansouStatus.value?.running ? '关闭服务' : '开启服务')
+const embeddedPansouServiceDisabled = computed(() => {
+  return loading.value || (!embeddedPansouStatus.value?.running && !settingsForm.value.embeddedPansou.enabled)
+})
 const sourceGroups = computed(() => {
   const order = ['内置聚合源', '公开页面源', '需配置源', 'PanSou 深度池', 'CMS 源池', '外部索引器']
   const groups = new Map<string, SearchSource[]>()
@@ -953,10 +971,12 @@ async function handleSearch() {
     return
   }
 
+  const startedAt = performance.now()
   loading.value = true
   lastQuery.value = text
   targetResourceCount.value = 0
   targetResourceMessage.value = ''
+  searchElapsedMs.value = 0
   states.value = selectedSourceIds.value.map((sourceId) => {
     const source = sources.value.find((item) => item.id === sourceId)
     return {
@@ -984,6 +1004,7 @@ async function handleSearch() {
     states.value = response.states
     targetResourceCount.value = response.targetResourceCount
     targetResourceMessage.value = response.targetResourceMessage
+    searchElapsedMs.value = performance.now() - startedAt
   } catch (error) {
     message.error(String(error))
   } finally {
@@ -995,6 +1016,27 @@ function sourceLabel(source: SearchSource) {
   if (source.status === 'requiresConfig') return '需配置'
   if (!source.enabled) return '暂不可用'
   return selectedSourceIds.value.includes(source.id) ? '已启用' : '未启用'
+}
+
+function isMagnetResource(item: ResourceItem) {
+  return item.diskType?.toLowerCase() === 'magnet' || item.url?.trim().toLowerCase().startsWith('magnet:')
+}
+
+function isMagnetFavorite(item: FavoriteResource) {
+  return item.diskType?.toLowerCase() === 'magnet' || item.url?.trim().toLowerCase().startsWith('magnet:')
+}
+
+function isCloudResource(item: ResourceItem) {
+  return isCloudDiskType(item.diskType)
+}
+
+function isCloudDiskType(diskType: string) {
+  const value = diskType.trim().toLowerCase()
+  return Boolean(value && !['cms', 'torznab', 'newznab', 'magnet', 'ed2k', 'download', 'web'].includes(value))
+}
+
+function formatDiskType(diskType: string) {
+  return diskType.trim()
 }
 
 function selectAllSources() {
@@ -1028,6 +1070,12 @@ function groupRuntimeSummary(groupName: string) {
   const failed = groupStates.filter((state) => state.status === 'failed').length
   if (loading.value) return `已返回 ${count} 条`
   return failed ? `成功 ${success}，返回 ${count} 条，失败 ${failed}` : `成功 ${success}，返回 ${count} 条`
+}
+
+function formatElapsedSeconds(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return ''
+  const seconds = Math.max(ms / 1000, 0.01)
+  return `${seconds.toFixed(2).replace(/\.?0+$/, '')} 秒`
 }
 
 async function openDetail(item: ResourceItem) {
@@ -1122,8 +1170,12 @@ async function loadSettings() {
   }
 }
 
-async function refreshSources() {
-  sources.value = await listSearchSources(settingsForm.value)
+async function refreshSources(preventEmbeddedAutoStart = false) {
+  const sourceSettings = preventEmbeddedAutoStart ? cloneSettings(settingsForm.value) : settingsForm.value
+  if (preventEmbeddedAutoStart) {
+    sourceSettings.embeddedPansou.autoStart = false
+  }
+  sources.value = await listSearchSources(sourceSettings)
   await refreshEmbeddedPansouStatus()
   const enabledIds = sources.value.filter((source) => source.enabled).map((source) => source.id)
   selectedSourceIds.value = selectedSourceIds.value.filter((id) => enabledIds.includes(id))
@@ -1161,15 +1213,22 @@ async function saveSettingsPanel() {
   }
 }
 
-async function handleRestartEmbeddedPansou() {
+async function handleToggleEmbeddedPansou() {
   embeddedPansouRestarting.value = true
   try {
-    embeddedPansouStatus.value = await restartEmbeddedPansou(serializeSettings(settingsForm.value))
-    await refreshSources()
+    const settings = serializeSettings(settingsForm.value)
+    const shouldStop = Boolean(embeddedPansouStatus.value?.running)
+    embeddedPansouStatus.value = shouldStop
+      ? await stopEmbeddedPansou(settings)
+      : await startEmbeddedPansou(settings)
+    await refreshSources(shouldStop)
     if (embeddedPansouStatus.value.running) {
-      message.success('内置 PanSou 已就绪')
+      if (!selectedSourceIds.value.includes(EMBEDDED_PANSOU_SOURCE_ID)) {
+        selectedSourceIds.value = [...selectedSourceIds.value, EMBEDDED_PANSOU_SOURCE_ID]
+      }
+      message.success('内置 PanSou 已开启')
     } else {
-      message.warning(embeddedPansouStatus.value.message)
+      message.success('内置 PanSou 已关闭')
     }
   } catch (error) {
     message.error(String(error))
@@ -1440,6 +1499,26 @@ function escapeHtml(text: string) {
 .login-form label > span {
   color: #334155;
   font-weight: 700;
+}
+
+:deep(.ant-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+:deep(.ant-btn > .ant-btn-icon),
+:deep(.ant-btn .ant-btn-loading-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+:deep(.ant-btn svg) {
+  display: block;
+  flex: 0 0 auto;
 }
 
 .login-meta {
@@ -1802,6 +1881,10 @@ function escapeHtml(text: string) {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.source-config-group-head > div {
+  min-width: 0;
 }
 
 .source-config-group-head h3 {
@@ -2391,6 +2474,41 @@ function escapeHtml(text: string) {
   gap: 12px;
 }
 
+.embedded-controls :deep(.ant-checkbox-wrapper) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-inline-start: 0;
+  min-height: 32px;
+  line-height: 1;
+}
+
+.embedded-controls :deep(.ant-checkbox) {
+  top: 0;
+  display: inline-flex;
+  flex: 0 0 16px;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.embedded-controls :deep(.ant-checkbox-inner) {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  border-radius: 5px;
+}
+
+.embedded-controls :deep(.ant-checkbox-checked::after) {
+  display: none;
+}
+
+.embedded-controls :deep(.ant-checkbox + span) {
+  padding-inline: 0;
+  white-space: nowrap;
+}
+
 .embedded-grid {
   display: grid;
   gap: 10px;
@@ -2496,6 +2614,7 @@ function escapeHtml(text: string) {
   height: 38px;
   padding: 0 14px;
   color: #0a6f6b;
+  line-height: 1;
   background: #e6f8f5;
   border: 1px solid #bce7e1;
   border-radius: 8px;
@@ -2510,10 +2629,17 @@ function escapeHtml(text: string) {
   height: 38px;
   padding: 0 14px;
   color: #344255;
+  line-height: 1;
   background: #f6f8fb;
   border: 1px solid #dfe7ec;
   border-radius: 8px;
   cursor: pointer;
+}
+
+.detail-button svg,
+.favorite-button svg {
+  display: block;
+  flex: 0 0 auto;
 }
 
 .favorite-button:disabled {
@@ -2546,6 +2672,27 @@ function escapeHtml(text: string) {
   color: #0a74d9;
   font-size: 18px;
   font-weight: 700;
+}
+
+.detail-url {
+  word-break: break-word;
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.detail-meta span {
+  padding: 4px 9px;
+  color: #335064;
+  font-size: 13px;
+  font-weight: 700;
+  background: #eef6f7;
+  border: 1px solid #d8e8ec;
+  border-radius: 999px;
 }
 
 .detail-box p {

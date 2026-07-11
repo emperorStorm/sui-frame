@@ -213,7 +213,7 @@ impl Default for EmbeddedPansouConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            auto_start: true,
+            auto_start: false,
             port: EMBEDDED_PANSOU_DEFAULT_PORT,
             src: "all".to_string(),
             channels: Vec::new(),
@@ -448,6 +448,9 @@ struct ResourceDetail {
     title: String,
     url: String,
     source_name: String,
+    disk_type: String,
+    link_type: String,
+    link_type_label: String,
     message: String,
     validation_status: String,
     can_open: bool,
@@ -526,7 +529,8 @@ async fn save_search_settings(
     let text = serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?;
     fs::write(path, text).map_err(|error| error.to_string())?;
     if embedded_pansou_config_changed(&old_settings.embedded_pansou, &normalized.embedded_pansou)
-        || normalized.embedded_pansou.enabled
+        || old_settings.embedded_pansou.auto_start
+        || normalized.embedded_pansou.auto_start
     {
         sync_embedded_pansou(&app, &normalized.embedded_pansou).await;
     }
@@ -542,7 +546,32 @@ fn get_embedded_pansou_status(app: AppHandle) -> EmbeddedPansouStatus {
 async fn restart_embedded_pansou(app: AppHandle, settings: SearchSettings) -> EmbeddedPansouStatus {
     let normalized = normalize_settings(settings);
     stop_owned_embedded_pansou(&app, "正在重启内置 PanSou");
-    sync_embedded_pansou(&app, &normalized.embedded_pansou).await;
+    sync_embedded_pansou_with_mode(&app, &normalized.embedded_pansou, true).await;
+    embedded_pansou_status_from_state(&app)
+}
+
+#[tauri::command]
+async fn start_embedded_pansou(app: AppHandle, settings: SearchSettings) -> EmbeddedPansouStatus {
+    let normalized = normalize_settings(settings);
+    sync_embedded_pansou_with_mode(&app, &normalized.embedded_pansou, true).await;
+    embedded_pansou_status_from_state(&app)
+}
+
+#[tauri::command]
+async fn stop_embedded_pansou(app: AppHandle, settings: SearchSettings) -> EmbeddedPansouStatus {
+    let normalized = normalize_settings(settings);
+    stop_owned_embedded_pansou(&app, "内置 PanSou 已关闭");
+    set_embedded_pansou_status(
+        &app,
+        EmbeddedPansouStatus {
+            enabled: normalized.embedded_pansou.enabled,
+            running: false,
+            reused: false,
+            endpoint: embedded_pansou_endpoint(normalized.embedded_pansou.port),
+            port: normalized.embedded_pansou.port,
+            message: "内置 PanSou 已关闭".to_string(),
+        },
+    );
     embedded_pansou_status_from_state(&app)
 }
 
@@ -601,14 +630,19 @@ async fn search_resources(
         .build()
         .map_err(|error| error.to_string())?;
     let page_no = page.unwrap_or(1).max(1);
-    let selected = resolve_selected_sources(&filters, &settings);
-    if selected
+    let selected_embedded_pansou = filters
+        .source_ids
         .iter()
-        .any(|source| source.id == EMBEDDED_PANSOU_SOURCE_ID)
+        .any(|source_id| source_id == EMBEDDED_PANSOU_SOURCE_ID);
+    if selected_embedded_pansou
         && settings.embedded_pansou.enabled
+        && settings.embedded_pansou.auto_start
     {
         sync_embedded_pansou(&app, &settings.embedded_pansou).await;
     }
+    let embedded_status = embedded_pansou_status_from_state(&app);
+    let selected =
+        resolve_selected_sources_with_embedded(&filters, &settings, Some(embedded_status));
     let tasks = selected.into_iter().map(|source| {
         search_source(
             client.clone(),
@@ -2073,15 +2107,46 @@ async fn detail_with_url(
     message: &str,
 ) -> Result<ResourceDetail, String> {
     let validation = validate_resource_url(&url).await;
+    let (link_type, link_type_label) = resource_link_type(&url, &item.disk_type);
     Ok(ResourceDetail {
         title: item.title.clone(),
         url,
         source_name: item.source_name.clone(),
+        disk_type: item.disk_type.clone(),
+        link_type,
+        link_type_label,
         message: message.to_string(),
         validation_status: validation.status,
         can_open: validation.can_open,
         validation_message: validation.message,
     })
+}
+
+fn resource_link_type(url: &str, disk_type: &str) -> (String, String) {
+    let text = url.trim().to_lowercase();
+    if text.starts_with("magnet:") {
+        return ("magnet".to_string(), "磁力链接".to_string());
+    }
+    if text.starts_with("ed2k://") {
+        return ("download".to_string(), "下载协议链接".to_string());
+    }
+    if is_known_disk_url(&text) || is_cloud_disk_type(disk_type) {
+        return ("cloud".to_string(), "云盘链接".to_string());
+    }
+    ("web".to_string(), "网页链接".to_string())
+}
+
+fn is_known_disk_url(url: &str) -> bool {
+    DISK_HOST_MARKERS.iter().any(|marker| url.contains(marker))
+}
+
+fn is_cloud_disk_type(disk_type: &str) -> bool {
+    let value = disk_type.trim().to_lowercase();
+    !value.is_empty()
+        && !matches!(
+            value.as_str(),
+            "cms" | "torznab" | "newznab" | "magnet" | "ed2k" | "download" | "web"
+        )
 }
 
 async fn fetch_text(client: &Client, url: &str) -> Result<String, String> {
@@ -2921,23 +2986,24 @@ fn build_coverage(states: &[SourceSearchState]) -> Vec<SourceCoverage> {
     output
 }
 
-fn search_sources(settings: &SearchSettings) -> Vec<SearchSource> {
-    search_sources_with_embedded(settings, None)
-}
-
 fn search_sources_with_embedded(
     settings: &SearchSettings,
     embedded_status: Option<EmbeddedPansouStatus>,
 ) -> Vec<SearchSource> {
     let mut sources = Vec::new();
     if settings.embedded_pansou.enabled {
+        let can_start_on_search = settings.embedded_pansou.auto_start;
         let fallback_status = EmbeddedPansouStatus {
             enabled: settings.embedded_pansou.enabled,
-            running: true,
+            running: can_start_on_search,
             reused: false,
             endpoint: embedded_pansou_endpoint(settings.embedded_pansou.port),
             port: settings.embedded_pansou.port,
-            message: "内置 PanSou 将在搜索前自动启动".to_string(),
+            message: if can_start_on_search {
+                "内置 PanSou 将在搜索前自动启动".to_string()
+            } else {
+                "内置 PanSou 未运行，可在数据源配置中手动启动服务".to_string()
+            },
         };
         let status = embedded_status.unwrap_or(fallback_status);
         sources.push(SearchSource {
@@ -3018,11 +3084,25 @@ fn search_sources_with_embedded(
     sources
 }
 
+#[cfg(test)]
+fn search_sources(settings: &SearchSettings) -> Vec<SearchSource> {
+    search_sources_with_embedded(settings, None)
+}
+
+#[cfg(test)]
 fn resolve_selected_sources(
     filters: &SearchFilters,
     settings: &SearchSettings,
 ) -> Vec<SearchSource> {
-    search_sources(settings)
+    resolve_selected_sources_with_embedded(filters, settings, None)
+}
+
+fn resolve_selected_sources_with_embedded(
+    filters: &SearchFilters,
+    settings: &SearchSettings,
+    embedded_status: Option<EmbeddedPansouStatus>,
+) -> Vec<SearchSource> {
+    search_sources_with_embedded(settings, embedded_status)
         .into_iter()
         .filter(|source| filters.source_ids.is_empty() || filters.source_ids.contains(&source.id))
         .collect()
@@ -4049,9 +4129,17 @@ fn stop_owned_embedded_pansou(app: &AppHandle, message: &str) {
 }
 
 async fn sync_embedded_pansou(app: &AppHandle, config: &EmbeddedPansouConfig) {
+    sync_embedded_pansou_with_mode(app, config, false).await;
+}
+
+async fn sync_embedded_pansou_with_mode(
+    app: &AppHandle,
+    config: &EmbeddedPansouConfig,
+    force_start: bool,
+) {
     let config = normalize_embedded_pansou_config(config.clone());
     let endpoint = embedded_pansou_endpoint(config.port);
-    if !config.enabled || !config.auto_start {
+    if !config.enabled || (!config.auto_start && !force_start) {
         stop_owned_embedded_pansou(app, "内置 PanSou 已关闭");
         set_embedded_pansou_status(
             app,
@@ -4250,6 +4338,8 @@ pub fn run() {
             save_search_settings,
             get_embedded_pansou_status,
             restart_embedded_pansou,
+            start_embedded_pansou,
+            stop_embedded_pansou,
             import_cms_sources,
             test_cms_sources,
             search_resources,
@@ -4470,6 +4560,9 @@ mod tests {
             title: "测试资源".to_string(),
             url: "https://pan.quark.cn/s/abc".to_string(),
             source_name: "mock".to_string(),
+            disk_type: "quark".to_string(),
+            link_type: "cloud".to_string(),
+            link_type_label: "云盘链接".to_string(),
             message: "ok".to_string(),
             validation_status: "valid".to_string(),
             can_open: true,
@@ -4548,6 +4641,68 @@ mod tests {
         assert_eq!(quark.title, "流浪地球");
         assert_eq!(quark.url, "https://pan.quark.cn/s/abc");
         assert_eq!(magnet.url, "magnet:?xt=urn:btih:abc");
+    }
+
+    #[test]
+    fn embedded_pansou_defaults_to_manual_start() {
+        let settings = SearchSettings::default();
+        assert!(settings.embedded_pansou.enabled);
+        assert!(!settings.embedded_pansou.auto_start);
+
+        let sources = search_sources(&settings);
+        let embedded = sources
+            .iter()
+            .find(|source| source.id == EMBEDDED_PANSOU_SOURCE_ID)
+            .expect("embedded PanSou source should be listed");
+        assert!(!embedded.enabled);
+        assert_eq!(embedded.status, "requiresConfig");
+        assert!(embedded.description.contains("手动启动"));
+    }
+
+    #[test]
+    fn embedded_pansou_is_available_when_manual_service_is_running() {
+        let settings = SearchSettings::default();
+        let sources = search_sources_with_embedded(
+            &settings,
+            Some(EmbeddedPansouStatus {
+                enabled: true,
+                running: true,
+                reused: false,
+                endpoint: embedded_pansou_endpoint(settings.embedded_pansou.port),
+                port: settings.embedded_pansou.port,
+                message: "内置 PanSou 运行中".to_string(),
+            }),
+        );
+        let embedded = sources
+            .iter()
+            .find(|source| source.id == EMBEDDED_PANSOU_SOURCE_ID)
+            .expect("embedded PanSou source should be listed");
+        assert!(embedded.enabled);
+        assert_eq!(embedded.status, "configured");
+    }
+
+    #[test]
+    fn classifies_resource_detail_link_type() {
+        assert_eq!(
+            resource_link_type("magnet:?xt=urn:btih:abc", "magnet"),
+            ("magnet".to_string(), "磁力链接".to_string())
+        );
+        assert_eq!(
+            resource_link_type("https://pan.quark.cn/s/abc", ""),
+            ("cloud".to_string(), "云盘链接".to_string())
+        );
+        assert_eq!(
+            resource_link_type("https://example.test/item", "aliyun"),
+            ("cloud".to_string(), "云盘链接".to_string())
+        );
+        assert_eq!(
+            resource_link_type("ed2k://example", ""),
+            ("download".to_string(), "下载协议链接".to_string())
+        );
+        assert_eq!(
+            resource_link_type("https://example.test/item", "CMS"),
+            ("web".to_string(), "网页链接".to_string())
+        );
     }
 
     #[test]
