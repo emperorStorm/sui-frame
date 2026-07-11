@@ -10,13 +10,17 @@ use std::fs;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36";
 const SETTINGS_FILE: &str = "search-settings.json";
+const USERS_FILE: &str = "users.json";
+const FAVORITES_FILE: &str = "favorites.json";
+const DEFAULT_USERNAME: &str = "admin";
+const DEFAULT_PASSWORD: &str = "123456";
 const RULE_SOURCE_FILE: &str = "rules/sources/default.json";
 const EMBEDDED_PANSOU_SOURCE_ID: &str = "embedded-pansou";
 const EMBEDDED_PANSOU_SIDECAR: &str = "pansou-sidecar";
@@ -402,6 +406,36 @@ struct ResourceItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct UserRecord {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserSession {
+    username: String,
+    display_name: String,
+    login_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FavoriteResource {
+    id: String,
+    username: String,
+    title: String,
+    url: String,
+    source_name: String,
+    disk_type: String,
+    share_user: String,
+    info: String,
+    created_at: String,
+    resource_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResultGroup {
     key: String,
     title: String,
@@ -473,6 +507,12 @@ async fn list_search_sources(
 #[tauri::command]
 fn get_search_settings(app: AppHandle) -> Result<SearchSettings, String> {
     read_search_settings(&app)
+}
+
+#[tauri::command]
+fn login_user(app: AppHandle, username: String, password: String) -> Result<UserSession, String> {
+    let users = read_users(&app)?;
+    authenticate_user(&users, &username, &password)
 }
 
 #[tauri::command]
@@ -639,6 +679,43 @@ async fn get_resource_detail(item: ResourceItem) -> Result<ResourceDetail, Strin
     }
 
     detail_with_url(&item, url, "已获得跳转地址。").await
+}
+
+#[tauri::command]
+fn list_favorites(app: AppHandle, username: String) -> Result<Vec<FavoriteResource>, String> {
+    let user = username.trim();
+    if user.is_empty() {
+        return Err("用户名不能为空".to_string());
+    }
+    Ok(read_favorites(&app)?
+        .into_iter()
+        .filter(|item| item.username == user)
+        .collect())
+}
+
+#[tauri::command]
+async fn add_favorite(
+    app: AppHandle,
+    username: String,
+    item: ResourceItem,
+    detail: ResourceDetail,
+) -> Result<FavoriteResource, String> {
+    let mut favorites = read_favorites(&app)?;
+    let favorite = add_favorite_record(&mut favorites, &username, &item, &detail)?;
+    write_favorites(&app, &favorites)?;
+    Ok(favorite)
+}
+
+#[tauri::command]
+fn remove_favorite(
+    app: AppHandle,
+    username: String,
+    favorite_id: String,
+) -> Result<Vec<FavoriteResource>, String> {
+    let mut favorites = read_favorites(&app)?;
+    let user_favorites = remove_favorite_record(&mut favorites, &username, &favorite_id)?;
+    write_favorites(&app, &favorites)?;
+    Ok(user_favorites)
 }
 
 #[tauri::command]
@@ -1770,7 +1847,7 @@ fn pansou_item(
             "source",
         ],
     )
-        .unwrap_or_else(|| term.to_string());
+    .unwrap_or_else(|| term.to_string());
     let disk_type = first_json_string(value, &["type", "cloud_type", "disk_type"])
         .unwrap_or_else(|| fallback_disk_type.to_string());
     let share_user = first_json_string(value, &["user", "share_user", "owner"]).unwrap_or_default();
@@ -3595,12 +3672,171 @@ fn read_search_settings(app: &AppHandle) -> Result<SearchSettings, String> {
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    config_file_path(app, SETTINGS_FILE)
+}
+
+fn users_path(app: &AppHandle) -> Result<PathBuf, String> {
+    config_file_path(app, USERS_FILE)
+}
+
+fn favorites_path(app: &AppHandle) -> Result<PathBuf, String> {
+    config_file_path(app, FAVORITES_FILE)
+}
+
+fn config_file_path(app: &AppHandle, file_name: &str) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    Ok(dir.join(SETTINGS_FILE))
+    Ok(dir.join(file_name))
+}
+
+fn read_users(app: &AppHandle) -> Result<Vec<UserRecord>, String> {
+    let path = users_path(app)?;
+    read_users_from_path(&path)
+}
+
+fn read_favorites(app: &AppHandle) -> Result<Vec<FavoriteResource>, String> {
+    let path = favorites_path(app)?;
+    read_favorites_from_path(&path)
+}
+
+fn write_favorites(app: &AppHandle, favorites: &[FavoriteResource]) -> Result<(), String> {
+    let path = favorites_path(app)?;
+    write_json_file(&path, favorites)
+}
+
+fn read_users_from_path(path: &PathBuf) -> Result<Vec<UserRecord>, String> {
+    if !path.exists() {
+        let users = vec![UserRecord {
+            username: DEFAULT_USERNAME.to_string(),
+            password: DEFAULT_PASSWORD.to_string(),
+        }];
+        write_json_file(path, &users)?;
+        return Ok(users);
+    }
+    let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let mut users =
+        serde_json::from_str::<Vec<UserRecord>>(&text).map_err(|error| error.to_string())?;
+    if users.is_empty() {
+        users.push(UserRecord {
+            username: DEFAULT_USERNAME.to_string(),
+            password: DEFAULT_PASSWORD.to_string(),
+        });
+        write_json_file(path, &users)?;
+    }
+    Ok(users)
+}
+
+fn read_favorites_from_path(path: &PathBuf) -> Result<Vec<FavoriteResource>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str::<Vec<FavoriteResource>>(&text).map_err(|error| error.to_string())
+}
+
+fn write_json_file<T: Serialize + ?Sized>(path: &PathBuf, value: &T) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    fs::write(path, text).map_err(|error| error.to_string())
+}
+
+fn authenticate_user(
+    users: &[UserRecord],
+    username: &str,
+    password: &str,
+) -> Result<UserSession, String> {
+    let name = username.trim();
+    let secret = password.trim();
+    if name.is_empty() || secret.is_empty() {
+        return Err("用户名或密码不能为空".to_string());
+    }
+    let user = users
+        .iter()
+        .find(|item| item.username == name && item.password == secret)
+        .ok_or_else(|| "用户名或密码错误".to_string())?;
+    Ok(UserSession {
+        username: user.username.clone(),
+        display_name: user.username.clone(),
+        login_at: current_timestamp_millis(),
+    })
+}
+
+fn add_favorite_record(
+    favorites: &mut Vec<FavoriteResource>,
+    username: &str,
+    item: &ResourceItem,
+    detail: &ResourceDetail,
+) -> Result<FavoriteResource, String> {
+    let user = username.trim();
+    if user.is_empty() {
+        return Err("用户名不能为空".to_string());
+    }
+    let url = detail.url.trim();
+    if url.is_empty() {
+        return Err("收藏链接不能为空".to_string());
+    }
+    if detail.validation_status.trim() == "invalid" {
+        return Err(detail.validation_message.clone());
+    }
+    if let Some(existing) = favorites
+        .iter()
+        .find(|favorite| favorite.username == user && favorite.url == url)
+        .cloned()
+    {
+        return Ok(existing);
+    }
+    let favorite = FavoriteResource {
+        id: stable_hash(&format!("{}{}{}", user, item.id, url)).to_string(),
+        username: user.to_string(),
+        title: non_empty_or(detail.title.trim().to_string(), item.title.clone()),
+        url: url.to_string(),
+        source_name: item.source_name.clone(),
+        disk_type: item.disk_type.clone(),
+        share_user: item.share_user.clone(),
+        info: item.info.clone(),
+        created_at: current_timestamp_millis(),
+        resource_id: item.id.clone(),
+    };
+    favorites.push(favorite.clone());
+    Ok(favorite)
+}
+
+fn remove_favorite_record(
+    favorites: &mut Vec<FavoriteResource>,
+    username: &str,
+    favorite_id: &str,
+) -> Result<Vec<FavoriteResource>, String> {
+    let user = username.trim();
+    let id = favorite_id.trim();
+    if user.is_empty() || id.is_empty() {
+        return Err("参数不能为空".to_string());
+    }
+    favorites.retain(|item| !(item.username == user && item.id == id));
+    Ok(favorites
+        .iter()
+        .filter(|item| item.username == user)
+        .cloned()
+        .collect())
+}
+
+fn current_timestamp_millis() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
+fn non_empty_or(value: String, fallback: String) -> String {
+    if value.trim().is_empty() {
+        fallback
+    } else {
+        value
+    }
 }
 
 fn selector(value: &str) -> Result<Selector, String> {
@@ -4010,6 +4246,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_search_sources,
             get_search_settings,
+            login_user,
             save_search_settings,
             get_embedded_pansou_status,
             restart_embedded_pansou,
@@ -4017,6 +4254,9 @@ pub fn run() {
             test_cms_sources,
             search_resources,
             get_resource_detail,
+            list_favorites,
+            add_favorite,
+            remove_favorite,
             open_external_url
         ])
         .build(tauri::generate_context!())
@@ -4174,6 +4414,88 @@ mod tests {
     }
 
     #[test]
+    fn initializes_default_user_file_when_missing() {
+        let path = unique_temp_path("users");
+        let users = read_users_from_path(&path).expect("default users should be created");
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].username, DEFAULT_USERNAME);
+        assert_eq!(users[0].password, DEFAULT_PASSWORD);
+        let raw = fs::read_to_string(&path).expect("users file should exist");
+        assert!(raw.contains(DEFAULT_USERNAME));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn authenticates_default_user_and_rejects_bad_password() {
+        let users = vec![UserRecord {
+            username: DEFAULT_USERNAME.to_string(),
+            password: DEFAULT_PASSWORD.to_string(),
+        }];
+        let session = authenticate_user(&users, DEFAULT_USERNAME, DEFAULT_PASSWORD)
+            .expect("default user should authenticate");
+        assert_eq!(session.username, DEFAULT_USERNAME);
+        assert_eq!(session.display_name, DEFAULT_USERNAME);
+        assert!(
+            authenticate_user(&users, DEFAULT_USERNAME, "wrong").is_err(),
+            "wrong password should fail"
+        );
+    }
+
+    #[test]
+    fn manages_favorites_per_user_with_dedup_and_delete() {
+        let source = SearchSource {
+            id: "mock".to_string(),
+            name: "mock".to_string(),
+            group: "test".to_string(),
+            enabled: true,
+            description: String::new(),
+            kind: "mock".to_string(),
+            config_index: None,
+            health_score: 60,
+            status: "ready".to_string(),
+        };
+        let item = resource_item(
+            &source,
+            1,
+            "测试资源".to_string(),
+            "简介".to_string(),
+            "https://source.test/item".to_string(),
+            "https://source.test/item".to_string(),
+            String::new(),
+            "quark".to_string(),
+            "张三".to_string(),
+            vec!["tag1".to_string()],
+        );
+        let detail = ResourceDetail {
+            title: "测试资源".to_string(),
+            url: "https://pan.quark.cn/s/abc".to_string(),
+            source_name: "mock".to_string(),
+            message: "ok".to_string(),
+            validation_status: "valid".to_string(),
+            can_open: true,
+            validation_message: "可打开".to_string(),
+        };
+        let mut favorites = Vec::new();
+        let first = add_favorite_record(&mut favorites, DEFAULT_USERNAME, &item, &detail)
+            .expect("first favorite should save");
+        let second = add_favorite_record(&mut favorites, DEFAULT_USERNAME, &item, &detail)
+            .expect("duplicate favorite should reuse existing record");
+        assert_eq!(favorites.len(), 1);
+        assert_eq!(first.id, second.id);
+
+        let third = add_favorite_record(&mut favorites, "user-b", &item, &detail)
+            .expect("other user should save separately");
+        assert_eq!(favorites.len(), 2);
+        assert_ne!(first.id, third.id);
+
+        let remaining = remove_favorite_record(&mut favorites, DEFAULT_USERNAME, &first.id)
+            .expect("favorite should be removed");
+        assert_eq!(remaining.len(), 0);
+        assert_eq!(favorites.len(), 1);
+        assert_eq!(favorites[0].username, "user-b");
+    }
+
+    #[test]
     fn parses_pansou_note_items_and_parent_disk_type() {
         let source = SearchSource {
             id: "embedded-pansou".to_string(),
@@ -4243,8 +4565,12 @@ mod tests {
     fn detects_empty_folder_page_markers() {
         assert!(looks_like_empty_folder_page("该文件夹为空，暂无文件"));
         assert!(looks_like_empty_folder_page("This folder is empty."));
-        assert!(looks_like_empty_folder_page("no files found in this folder"));
-        assert!(!looks_like_empty_folder_page("流浪地球 4K 文件列表 保存到网盘"));
+        assert!(looks_like_empty_folder_page(
+            "no files found in this folder"
+        ));
+        assert!(!looks_like_empty_folder_page(
+            "流浪地球 4K 文件列表 保存到网盘"
+        ));
     }
 
     #[test]
@@ -4364,5 +4690,16 @@ mod tests {
                 }
             }
         });
+    }
+
+    fn unique_temp_path(prefix: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "sui-frame-{}-{}-{}.json",
+            prefix,
+            current_timestamp_millis(),
+            stable_hash(prefix)
+        ));
+        path
     }
 }

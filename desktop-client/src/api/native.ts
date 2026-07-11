@@ -183,6 +183,25 @@ export interface ResourceDetail {
   validationMessage: string
 }
 
+export interface UserSession {
+  username: string
+  displayName: string
+  loginAt: string
+}
+
+export interface FavoriteResource {
+  id: string
+  username: string
+  title: string
+  url: string
+  sourceName: string
+  diskType: string
+  shareUser: string
+  info: string
+  createdAt: string
+  resourceId: string
+}
+
 export interface SourceSearchState {
   sourceId: string
   sourceName: string
@@ -257,6 +276,10 @@ export function getSearchSettings() {
   return invoke<SearchSettings>('get_search_settings')
 }
 
+export function loginUser(username: string, password: string) {
+  return invoke<UserSession>('login_user', { username, password })
+}
+
 export function saveSearchSettings(settings: SearchSettings) {
   return invoke<SearchSettings>('save_search_settings', { settings })
 }
@@ -283,6 +306,18 @@ export function searchResources(query: string, page: number, filters: SearchFilt
 
 export function getResourceDetail(item: ResourceItem) {
   return invoke<ResourceDetail>('get_resource_detail', { item })
+}
+
+export function listFavorites(username: string) {
+  return invoke<FavoriteResource[]>('list_favorites', { username })
+}
+
+export function addFavorite(username: string, item: ResourceItem, detail: ResourceDetail) {
+  return invoke<FavoriteResource>('add_favorite', { username, item, detail })
+}
+
+export function removeFavorite(username: string, favoriteId: string) {
+  return invoke<FavoriteResource[]>('remove_favorite', { username, favoriteId })
 }
 
 export function openExternalUrl(url: string) {

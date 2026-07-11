@@ -1,5 +1,40 @@
 <template>
-  <main class="workbench">
+  <main v-if="!currentUser" class="login-shell">
+    <section class="login-panel">
+      <div class="login-brand">
+        <img src="../assets/brand/sui-frame-icon.svg" alt="影岁" />
+        <div>
+          <p>影岁</p>
+          <h1>登录资源工作台</h1>
+        </div>
+      </div>
+      <div class="login-form">
+        <label>
+          <span>用户名</span>
+          <a-input v-model:value="loginForm.username" size="large" autocomplete="username" @press-enter="handleLogin" />
+        </label>
+        <label>
+          <span>密码</span>
+          <a-input-password
+            v-model:value="loginForm.password"
+            size="large"
+            autocomplete="current-password"
+            @press-enter="handleLogin"
+          />
+        </label>
+        <a-button type="primary" size="large" :loading="loginLoading" @click="handleLogin">
+          <template #icon><LogIn :size="18" /></template>
+          登录
+        </a-button>
+      </div>
+      <div class="login-meta">
+        <span>默认账号 admin / 123456</span>
+        <span v-if="appVersion">v{{ appVersion }}</span>
+      </div>
+    </section>
+  </main>
+
+  <main v-else class="workbench">
     <aside class="rail">
       <div class="brand-mark">
         <img src="../assets/brand/sui-frame-icon.svg" alt="影岁" />
@@ -7,6 +42,11 @@
       <a-tooltip title="资源搜索">
         <button class="rail-button" :class="{ active: activeView === 'search' }" type="button" @click="activeView = 'search'">
           <Search :size="22" />
+        </button>
+      </a-tooltip>
+      <a-tooltip title="我的收藏">
+        <button class="rail-button" :class="{ active: activeView === 'favorites' }" type="button" @click="openFavoritesView">
+          <Bookmark :size="22" />
         </button>
       </a-tooltip>
       <a-tooltip title="数据源配置">
@@ -21,6 +61,11 @@
           <Settings :size="22" />
         </button>
       </a-tooltip>
+      <a-tooltip :title="`${currentUser?.displayName || '用户'}，退出登录`">
+        <button class="rail-button" type="button" @click="handleLogout">
+          <LogOut :size="22" />
+        </button>
+      </a-tooltip>
     </aside>
 
     <section class="stage">
@@ -29,8 +74,12 @@
           <img src="../assets/brand/sui-frame-icon.svg" alt="影岁" />
           <div>
             <p>影岁</p>
-            <h1>{{ activeView === 'search' ? '影视资源检索台' : '数据源配置' }}</h1>
+            <h1>{{ activeViewTitle }}</h1>
           </div>
+        </div>
+        <div class="user-badge">
+          <UserRound :size="18" />
+          <span>{{ currentUser?.displayName || '用户' }}</span>
         </div>
       </header>
 
@@ -103,7 +152,26 @@
               </a-button>
             </div>
 
-            <a-empty v-if="!loading && !items.length" description="输入关键词后开始检索" />
+            <section v-if="loading" class="search-loading-panel">
+              <div class="loading-orbit">
+                <LoaderCircle class="spin" :size="30" />
+                <span></span>
+              </div>
+              <div class="loading-copy">
+                <strong>正在聚合资源</strong>
+                <p>关键词 “{{ lastQuery }}”，并发检索 {{ selectedEnabledCount }} 个来源</p>
+              </div>
+              <div class="loading-meter">
+                <i></i>
+              </div>
+              <div class="loading-stats">
+                <span>已返回 {{ totalReturnedCount }} 条</span>
+                <span>成功 {{ successSourceCount }} 个</span>
+                <span v-if="failedSourceCount">失败 {{ failedSourceCount }} 个</span>
+              </div>
+            </section>
+
+            <a-empty v-else-if="!items.length" :description="lastQuery ? '暂未检索到匹配资源' : '输入关键词后开始检索'" />
 
             <div v-else class="group-list">
               <section v-for="group in groups" :key="group.key" class="result-group">
@@ -116,7 +184,6 @@
                     v-for="item in group.items"
                     :key="item.id"
                     class="result-item"
-                    @click="openDetail(item)"
                   >
                     <div class="result-main">
                       <h3 v-html="highlightTitle(item.title)"></h3>
@@ -132,14 +199,80 @@
                         <a-tag v-for="tag in item.tags.slice(0, 3)" :key="`${item.id}-${tag}`">{{ tag }}</a-tag>
                       </div>
                     </div>
-                    <button class="detail-button" type="button">
-                      <Film :size="18" />
-                      详情
-                    </button>
+                    <div class="result-actions">
+                      <button class="detail-button" type="button" @click.stop="openDetail(item)">
+                        <Film :size="18" />
+                        详情
+                      </button>
+                      <button
+                        class="favorite-button"
+                        type="button"
+                        :disabled="favoriteLoadingIds.includes(item.id)"
+                        @click.stop="handleFavorite(item)"
+                      >
+                        <LoaderCircle v-if="favoriteLoadingIds.includes(item.id)" class="spin" :size="18" />
+                        <Bookmark v-else :size="18" />
+                        收藏
+                      </button>
+                    </div>
                   </article>
                 </div>
               </section>
             </div>
+          </section>
+        </div>
+      </section>
+
+      <section v-else-if="activeView === 'favorites'" class="favorites-view">
+        <div class="favorites-head">
+          <div>
+            <h2>我的收藏</h2>
+            <p>当前用户 {{ currentUser?.displayName || '用户' }} 已收藏 {{ favorites.length }} 条资源。</p>
+          </div>
+          <a-button :loading="favoritesLoading" @click="loadFavorites">
+            <template #icon><RefreshCw :size="16" /></template>
+            刷新
+          </a-button>
+        </div>
+
+        <div class="favorites-scroll">
+          <section v-if="favoritesLoading" class="favorites-loading">
+            <LoaderCircle class="spin" :size="26" />
+            <span>正在读取收藏资源</span>
+          </section>
+          <section v-else-if="!favorites.length" class="favorites-empty">
+            <Bookmark :size="34" />
+            <h3>还没有收藏资源</h3>
+            <p>在资源搜索结果中点击“收藏”，解析后的可打开链接会保存在这里。</p>
+          </section>
+          <section v-else class="favorites-list">
+            <article v-for="favorite in favorites" :key="favorite.id" class="favorite-card">
+              <div class="favorite-main">
+                <h3>{{ favorite.title }}</h3>
+                <p>{{ favorite.info || '暂无文件摘要' }}</p>
+                <a :href="favorite.url" target="_blank" rel="noreferrer">{{ favorite.url }}</a>
+                <div class="tag-row">
+                  <a-tag color="cyan">{{ favorite.sourceName || '未知来源' }}</a-tag>
+                  <a-tag v-if="favorite.diskType">{{ favorite.diskType }}</a-tag>
+                  <a-tag v-if="favorite.shareUser">{{ favorite.shareUser }}</a-tag>
+                  <a-tag>{{ formatFavoriteTime(favorite.createdAt) }}</a-tag>
+                </div>
+              </div>
+              <div class="favorite-actions">
+                <a-button @click="openUrl(favorite.url)">
+                  <template #icon><ExternalLink :size="16" /></template>
+                  打开
+                </a-button>
+                <a-button @click="copyUrl(favorite.url)">
+                  <template #icon><Clipboard :size="16" /></template>
+                  复制
+                </a-button>
+                <a-button danger :loading="removingFavoriteId === favorite.id" @click="handleRemoveFavorite(favorite.id)">
+                  <template #icon><Trash2 :size="16" /></template>
+                  删除
+                </a-button>
+              </div>
+            </article>
           </section>
         </div>
       </section>
@@ -447,6 +580,7 @@ import { computed, h, onMounted, ref } from 'vue'
 import { message, Modal } from 'ant-design-vue'
 import {
   Activity,
+  Bookmark,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
@@ -455,14 +589,18 @@ import {
   ExternalLink,
   Film,
   LoaderCircle,
+  LogIn,
+  LogOut,
   Plus,
   RefreshCw,
   Search,
   Settings,
-  Trash2
+  Trash2,
+  UserRound
 } from 'lucide-vue-next'
 import AppNotificationCenter from '../components/AppNotificationCenter.vue'
 import {
+  addFavorite,
   checkAppUpdate,
   formatUpdateError,
   getEmbeddedPansouStatus,
@@ -471,8 +609,11 @@ import {
   getResourceDetail,
   importCmsSources,
   installAppUpdate,
+  listFavorites,
   listSearchSources,
+  loginUser,
   openExternalUrl,
+  removeFavorite,
   restartEmbeddedPansou,
   saveSearchSettings,
   searchResources,
@@ -481,6 +622,7 @@ import {
   type CmsSourceConfig,
   type EmbeddedPansouConfig,
   type EmbeddedPansouStatus,
+  type FavoriteResource,
   type IndexerConfig,
   type PansouEndpointConfig,
   type ResourceDetail,
@@ -489,7 +631,8 @@ import {
   type SearchSettings,
   type SearchSource,
   type SourceSearchState,
-  type UpdateCheckResult
+  type UpdateCheckResult,
+  type UserSession
 } from '../api/native'
 
 type EditablePansouEndpoint = PansouEndpointConfig & {
@@ -574,10 +717,13 @@ const query = ref('')
 const lastQuery = ref('')
 const loading = ref(false)
 const detailLoading = ref(false)
+const loginLoading = ref(false)
+const favoritesLoading = ref(false)
+const removingFavoriteId = ref('')
 const detailOpen = ref(false)
 const settingsOpen = ref(false)
 const settingsSaving = ref(false)
-const activeView = ref<'search' | 'sources'>('search')
+const activeView = ref<'search' | 'favorites' | 'sources'>('search')
 const sourceSummaryOpen = ref(false)
 const expandedSourceGroup = ref('')
 const sources = ref<SearchSource[]>([])
@@ -588,6 +734,10 @@ const states = ref<SourceSearchState[]>([])
 const targetResourceCount = ref(0)
 const targetResourceMessage = ref('')
 const detail = ref<ResourceDetail>()
+const currentUser = ref<UserSession>()
+const loginForm = ref({ username: 'admin', password: '123456' })
+const favorites = ref<FavoriteResource[]>([])
+const favoriteLoadingIds = ref<string[]>([])
 const settingsForm = ref<EditableSearchSettings>(cloneSettings(DEFAULT_SETTINGS))
 const cmsImportText = ref('')
 const cmsTesting = ref(false)
@@ -632,6 +782,11 @@ const sourceGroups = computed(() => {
     .map(([name, groupSources]) => ({ name, sources: groupSources }))
 })
 const resultTitle = computed(() => lastQuery.value ? `“${lastQuery.value}” 的匹配资源` : '资源结果')
+const activeViewTitle = computed(() => {
+  if (activeView.value === 'search') return '影视资源检索台'
+  if (activeView.value === 'favorites') return '我的收藏'
+  return '数据源配置'
+})
 const resultHint = computed(() => {
   if (loading.value) return '正在并发检索已启用来源'
   if (!lastQuery.value) return '输入关键词后按默认策略聚合可用来源'
@@ -641,8 +796,6 @@ const resultHint = computed(() => {
 onMounted(async () => {
   try {
     await loadCurrentVersion()
-    await loadSettings()
-    await refreshSources()
   } catch (error) {
     message.error(String(error))
   }
@@ -654,6 +807,63 @@ async function loadCurrentVersion() {
   } catch {
     appVersion.value = ''
   }
+}
+
+async function handleLogin() {
+  if (loginLoading.value) return
+  const username = loginForm.value.username.trim()
+  const password = loginForm.value.password.trim()
+  if (!username || !password) {
+    message.warning('请输入用户名和密码')
+    return
+  }
+  loginLoading.value = true
+  try {
+    currentUser.value = await loginUser(username, password)
+    await initializeWorkbench()
+    message.success(`欢迎回来，${currentUser.value.displayName}`)
+  } catch (error) {
+    currentUser.value = undefined
+    message.error(String(error))
+  } finally {
+    loginLoading.value = false
+  }
+}
+
+async function initializeWorkbench() {
+  await loadSettings()
+  await refreshSources()
+  await loadFavorites()
+  activeView.value = 'search'
+}
+
+function handleLogout() {
+  currentUser.value = undefined
+  favorites.value = []
+  items.value = []
+  groups.value = []
+  states.value = []
+  lastQuery.value = ''
+  detail.value = undefined
+  detailOpen.value = false
+  activeView.value = 'search'
+}
+
+async function loadFavorites() {
+  if (!currentUser.value) return
+  favoritesLoading.value = true
+  try {
+    favorites.value = await listFavorites(currentUser.value.username)
+  } catch (error) {
+    message.error(String(error))
+  } finally {
+    favoritesLoading.value = false
+  }
+}
+
+async function openFavoritesView() {
+  activeView.value = 'favorites'
+  await loadFavorites()
 }
 
 async function checkUpdate() {
@@ -834,6 +1044,55 @@ async function openDetail(item: ResourceItem) {
   }
 }
 
+async function handleFavorite(item: ResourceItem) {
+  if (!currentUser.value || favoriteLoadingIds.value.includes(item.id)) return
+  favoriteLoadingIds.value = [...favoriteLoadingIds.value, item.id]
+  try {
+    const resourceDetail = await getResourceDetail(item)
+    const url = resourceDetail.url.trim()
+    if (!url) {
+      message.warning('未解析到可收藏的跳转地址')
+      return
+    }
+    if (resourceDetail.validationStatus === 'invalid' || !resourceDetail.canOpen) {
+      message.warning(resourceDetail.validationMessage || '该资源链接不可用，未加入收藏')
+      return
+    }
+    const existing = favorites.value.find((favorite) => favorite.url === url)
+    if (existing) {
+      message.info('已收藏过')
+      return
+    }
+    const favorite = await addFavorite(currentUser.value.username, item, resourceDetail)
+    favorites.value = mergeFavorite(favorites.value, favorite)
+    message.success('已加入我的收藏')
+  } catch (error) {
+    message.error(String(error))
+  } finally {
+    favoriteLoadingIds.value = favoriteLoadingIds.value.filter((id) => id !== item.id)
+  }
+}
+
+async function handleRemoveFavorite(favoriteId: string) {
+  if (!currentUser.value || removingFavoriteId.value) return
+  removingFavoriteId.value = favoriteId
+  try {
+    favorites.value = await removeFavorite(currentUser.value.username, favoriteId)
+    message.success('已删除收藏')
+  } catch (error) {
+    message.error(String(error))
+  } finally {
+    removingFavoriteId.value = ''
+  }
+}
+
+function mergeFavorite(list: FavoriteResource[], favorite: FavoriteResource) {
+  if (list.some((item) => item.id === favorite.id || item.url === favorite.url)) {
+    return list.map((item) => (item.id === favorite.id || item.url === favorite.url ? favorite : item))
+  }
+  return [favorite, ...list]
+}
+
 function closeDetail() {
   detailOpen.value = false
   detail.value = undefined
@@ -846,6 +1105,12 @@ async function copyUrl(url: string) {
 
 async function openUrl(url: string) {
   await openExternalUrl(url)
+}
+
+function formatFavoriteTime(value: string) {
+  const timestamp = Number(value)
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '收藏时间未知'
+  return new Date(timestamp).toLocaleString('zh-CN', { hour12: false })
 }
 
 async function loadSettings() {
@@ -1114,6 +1379,78 @@ function escapeHtml(text: string) {
 </script>
 
 <style scoped>
+.login-shell {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(139, 205, 195, 0.2), transparent 30%),
+    linear-gradient(135deg, #0b1220 0%, #101b2a 54%, #eef5f4 54.2%, #eef5f4 100%);
+}
+
+.login-panel {
+  width: min(460px, 100%);
+  padding: 30px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #dfe8ed;
+  border-radius: 8px;
+  box-shadow: 0 28px 72px rgba(15, 28, 44, 0.2);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.login-brand img {
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
+  box-shadow: 0 16px 34px rgba(13, 22, 36, 0.2);
+}
+
+.login-brand p {
+  margin: 0 0 5px;
+  color: #0f9489;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.login-brand h1 {
+  margin: 0;
+  color: #10202b;
+  font-size: 28px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.login-form {
+  display: grid;
+  gap: 16px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.login-form label > span {
+  color: #334155;
+  font-weight: 700;
+}
+
+.login-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  color: #718196;
+  font-size: 13px;
+}
+
 .workbench {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
@@ -1210,6 +1547,18 @@ function escapeHtml(text: string) {
   letter-spacing: 0;
 }
 
+.user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: #d8f4ef;
+  background: rgba(11, 18, 32, 0.28);
+  border: 1px solid rgba(216, 244, 239, 0.24);
+  border-radius: 8px;
+  font-weight: 700;
+}
+
 .search-panel,
 .result-shell {
   background: rgba(255, 255, 255, 0.96);
@@ -1223,6 +1572,7 @@ function escapeHtml(text: string) {
 }
 
 .search-view,
+.favorites-view,
 .source-config-view {
   display: grid;
   gap: 16px;
@@ -1234,6 +1584,11 @@ function escapeHtml(text: string) {
 }
 
 .source-config-view {
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.favorites-view {
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
@@ -1563,6 +1918,125 @@ function escapeHtml(text: string) {
   font-size: 12px;
 }
 
+.favorites-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #e2e9ee;
+  border-radius: 8px;
+  box-shadow: 0 18px 46px rgba(25, 39, 56, 0.08);
+}
+
+.favorites-head h2 {
+  margin: 0 0 6px;
+  font-size: 24px;
+}
+
+.favorites-head p {
+  margin: 0;
+  color: #718196;
+}
+
+.favorites-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+
+.favorites-loading,
+.favorites-empty,
+.favorite-card {
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #e2e9ee;
+  border-radius: 8px;
+  box-shadow: 0 18px 46px rgba(25, 39, 56, 0.08);
+}
+
+.favorites-loading,
+.favorites-empty {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  min-height: 260px;
+  color: #607086;
+  text-align: center;
+}
+
+.favorites-empty {
+  padding: 28px;
+}
+
+.favorites-empty svg {
+  color: #0f9489;
+}
+
+.favorites-empty h3 {
+  margin: 0;
+  color: #10202b;
+  font-size: 20px;
+}
+
+.favorites-empty p {
+  max-width: 420px;
+  margin: 0;
+  color: #718196;
+  line-height: 1.6;
+}
+
+.favorites-list {
+  display: grid;
+  gap: 12px;
+}
+
+.favorite-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  padding: 18px;
+}
+
+.favorite-main {
+  min-width: 0;
+}
+
+.favorite-main h3 {
+  margin: 0 0 10px;
+  color: #10202b;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.favorite-main p {
+  display: -webkit-box;
+  max-height: 70px;
+  margin: 0 0 10px;
+  overflow: hidden;
+  color: #536274;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.favorite-main a {
+  display: block;
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+  color: #0a74d9;
+  font-weight: 700;
+}
+
+.favorite-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .result-head {
   display: flex;
   align-items: flex-start;
@@ -1598,6 +2072,106 @@ function escapeHtml(text: string) {
   border-color: #f0d199;
 }
 
+.search-loading-panel {
+  position: relative;
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 14px 16px;
+  overflow: hidden;
+  padding: 20px;
+  background:
+    linear-gradient(120deg, rgba(230, 248, 245, 0.92), rgba(255, 255, 255, 0.96)),
+    #ffffff;
+  border: 1px solid #bce7e1;
+  border-radius: 8px;
+}
+
+.search-loading-panel::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background: linear-gradient(90deg, transparent, rgba(15, 148, 137, 0.1), transparent);
+  transform: translateX(-100%);
+  animation: scan 1.8s ease-in-out infinite;
+}
+
+.loading-orbit {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  color: #0f9489;
+  background: #ffffff;
+  border: 1px solid #bce7e1;
+  border-radius: 999px;
+}
+
+.loading-orbit span {
+  position: absolute;
+  inset: 7px;
+  border: 1px dashed #9fdad4;
+  border-radius: 999px;
+  animation: spin 2.4s linear infinite;
+}
+
+.loading-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 5px;
+  align-self: center;
+}
+
+.loading-copy strong {
+  color: #10202b;
+  font-size: 18px;
+}
+
+.loading-copy p {
+  margin: 0;
+  color: #5f6f83;
+}
+
+.loading-meter {
+  position: relative;
+  z-index: 1;
+  grid-column: 1 / -1;
+  height: 8px;
+  overflow: hidden;
+  background: #dce9e7;
+  border-radius: 999px;
+}
+
+.loading-meter i {
+  display: block;
+  width: 38%;
+  height: 100%;
+  background: linear-gradient(90deg, #0f9489, #62c7bd);
+  border-radius: inherit;
+  animation: loading-meter 1.35s ease-in-out infinite;
+}
+
+.loading-stats {
+  position: relative;
+  z-index: 1;
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.loading-stats span {
+  padding: 5px 9px;
+  color: #0a6f6b;
+  background: #ffffff;
+  border: 1px solid #c8ebe6;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .group-list,
 .result-list {
   display: grid;
@@ -1628,13 +2202,12 @@ function escapeHtml(text: string) {
 
 .result-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   padding: 18px;
   background: #ffffff;
   border: 1px solid #e5ebef;
   border-radius: 8px;
-  cursor: pointer;
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
 
@@ -1908,11 +2481,18 @@ function escapeHtml(text: string) {
   border-color: #c9ede8;
 }
 
+.result-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  align-self: end;
+}
+
 .detail-button {
-  align-self: center;
   display: inline-flex;
   gap: 8px;
   align-items: center;
+  justify-content: center;
   height: 38px;
   padding: 0 14px;
   color: #0a6f6b;
@@ -1920,6 +2500,25 @@ function escapeHtml(text: string) {
   border: 1px solid #bce7e1;
   border-radius: 8px;
   cursor: pointer;
+}
+
+.favorite-button {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  padding: 0 14px;
+  color: #344255;
+  background: #f6f8fb;
+  border: 1px solid #dfe7ec;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.favorite-button:disabled {
+  cursor: wait;
+  opacity: 0.75;
 }
 
 .detail-loading {
@@ -1996,6 +2595,27 @@ function escapeHtml(text: string) {
   }
 }
 
+@keyframes scan {
+  50%,
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes loading-meter {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  55% {
+    transform: translateX(60%);
+  }
+
+  100% {
+    transform: translateX(260%);
+  }
+}
+
 @media (max-width: 980px) {
   .workbench {
     grid-template-columns: 64px minmax(0, 1fr);
@@ -2029,6 +2649,7 @@ function escapeHtml(text: string) {
   }
 
   .source-config-head,
+  .favorites-head,
   .settings-section-head {
     flex-direction: column;
   }
@@ -2040,6 +2661,7 @@ function escapeHtml(text: string) {
   .pool-row,
   .cms-row,
   .indexer-row,
+  .favorite-card,
   .health-list > div {
     grid-template-columns: 1fr;
   }
@@ -2054,7 +2676,14 @@ function escapeHtml(text: string) {
     width: 100%;
   }
 
-  .detail-button {
+  .result-actions,
+  .favorite-actions {
+    justify-content: stretch;
+  }
+
+  .detail-button,
+  .favorite-button,
+  .favorite-actions :deep(.ant-btn) {
     justify-content: center;
     width: 100%;
   }
