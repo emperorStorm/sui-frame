@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "影岁桌面端默认权限",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "process:default",
+    "updater:default"
+  ]
 }

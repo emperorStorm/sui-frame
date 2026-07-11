@@ -1,0 +1,302 @@
+name: Release Desktop
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      sync_tag:
+        description: '仅同步已有 Release 资产到 OSS，例如 v0.1.1'
+        required: false
+        type: string
+
+env:
+  OSS_PROJECT_PREFIX: sui-frame
+
+jobs:
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      should_sync_assets: ${{ steps.version.outputs.should_sync_assets }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      release_body: ${{ steps.version.outputs.release_body }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect version from commit message
+        id: version
+        shell: bash
+        run: |
+          sync_tag="${{ github.event.inputs.sync_tag || '' }}"
+          if [[ -n "$sync_tag" ]]; then
+            if [[ "$sync_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              version="${BASH_REMATCH[1]}"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              echo "should_sync_assets=true" >> "$GITHUB_OUTPUT"
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              echo "tag=$sync_tag" >> "$GITHUB_OUTPUT"
+              echo "release_body=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            printf 'Invalid sync_tag: %s\n' "$sync_tag"
+            exit 1
+          fi
+
+          message="$(git log -1 --pretty=%B)"
+          if [[ "$message" =~ (^|[^0-9A-Za-z])v([0-9]+\.[0-9]+\.[0-9]+)([^0-9A-Za-z]|$) ]]; then
+            version="${BASH_REMATCH[2]}"
+            body="$(printf '%s\n' "$message" | sed '1d' | sed '/./,$!d')"
+            if [[ -z "${body//[[:space:]]/}" ]]; then
+              body="自动打包发布影岁桌面端，包含 macOS 和 Windows 安装包。"
+            fi
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "should_sync_assets=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tag=v$version" >> "$GITHUB_OUTPUT"
+            {
+              echo "release_body<<EOF"
+              printf '%s\n' "$body"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "should_sync_assets=false" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "release_body=" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish-tauri:
+    needs: detect-version
+    if: needs.detect-version.outputs.should_release == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+          - platform: windows-latest
+            args: --bundles nsis
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release config
+        shell: bash
+        run: |
+          missing=()
+          for name in ALIYUN_OSS_BASE_URL ALIYUN_OSS_BUCKET ALIYUN_OSS_ENDPOINT TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing GitHub Actions config: %s\n' "${missing[*]}"
+            exit 1
+          fi
+        env:
+          ALIYUN_OSS_BASE_URL: ${{ vars.ALIYUN_OSS_BASE_URL }}
+          ALIYUN_OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET }}
+          ALIYUN_OSS_ENDPOINT: ${{ vars.ALIYUN_OSS_ENDPOINT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: |
+            desktop-client/package-lock.json
+            tauri-desktop/package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: desktop-client
+
+      - name: Install Tauri dependencies
+        run: npm ci
+        working-directory: tauri-desktop
+
+      - name: Sync release version
+        shell: bash
+        run: |
+          node <<'NODE'
+            const fs = require('fs');
+            for (const file of ['desktop-client/package.json', 'tauri-desktop/package.json']) {
+              const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+              json.version = process.env.RELEASE_VERSION;
+              fs.writeFileSync(file, JSON.stringify(json, null, 2) + '\n');
+            }
+          NODE
+          npm install --package-lock-only --ignore-scripts --prefix desktop-client
+          npm install --package-lock-only --ignore-scripts --prefix tauri-desktop
+          node <<'NODE'
+            const fs = require('fs');
+            const version = process.env.RELEASE_VERSION;
+            const ossBaseUrl = process.env.ALIYUN_OSS_BASE_URL.replace(/\/+$/, '');
+            const ossProjectPrefix = (process.env.OSS_PROJECT_PREFIX || '').replace(/^\/+|\/+$/g, '');
+            const updaterPath = ossProjectPrefix ? `${ossProjectPrefix}/latest.json` : 'latest.json';
+            const cargo = 'tauri-desktop/src-tauri/Cargo.toml';
+            const conf = 'tauri-desktop/src-tauri/tauri.conf.json';
+            fs.writeFileSync(cargo, fs.readFileSync(cargo, 'utf8').replace(/^version = \".*\"/m, `version = "${version}"`));
+            const json = JSON.parse(fs.readFileSync(conf, 'utf8'));
+            json.version = version;
+            json.plugins.updater.endpoints = [`${ossBaseUrl}/${updaterPath}`];
+            fs.writeFileSync(conf, JSON.stringify(json, null, 2) + '\n');
+          NODE
+        env:
+          RELEASE_VERSION: ${{ needs.detect-version.outputs.version }}
+          ALIYUN_OSS_BASE_URL: ${{ vars.ALIYUN_OSS_BASE_URL }}
+
+      - name: Build and upload release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: tauri-desktop
+          tauriScript: npm run tauri
+          tagName: ${{ needs.detect-version.outputs.tag }}
+          releaseName: 影岁 ${{ needs.detect-version.outputs.tag }}
+          releaseBody: ${{ needs.detect-version.outputs.release_body }}
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}
+
+  publish-update-assets:
+    needs:
+      - detect-version
+      - publish-tauri
+    if: always() && needs.detect-version.outputs.should_sync_assets == 'true' && (needs.detect-version.outputs.should_release != 'true' || needs.publish-tauri.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.detect-version.outputs.tag }}
+      OSS_BUCKET: ${{ vars.ALIYUN_OSS_BUCKET }}
+      OSS_ENDPOINT: ${{ vars.ALIYUN_OSS_ENDPOINT }}
+      OSS_BASE_URL: ${{ vars.ALIYUN_OSS_BASE_URL }}
+      ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+      ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+    steps:
+      - name: Validate OSS upload config
+        shell: bash
+        run: |
+          missing=()
+          for name in ALIYUN_ACCESS_KEY_ID ALIYUN_ACCESS_KEY_SECRET OSS_BUCKET OSS_ENDPOINT OSS_BASE_URL; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing OSS upload config: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - name: Download release assets
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare OSS updater metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_url="${OSS_BASE_URL%/}"
+          project_prefix="${OSS_PROJECT_PREFIX#/}"
+          project_prefix="${project_prefix%/}"
+          version_dir="releases/${TAG}"
+          latest_dir="."
+          if [[ -n "$project_prefix" ]]; then
+            version_dir="${project_prefix}/${version_dir}"
+            latest_dir="$project_prefix"
+          fi
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const dir = 'release-assets';
+          const baseUrl = process.env.OSS_BASE_URL.replace(/\/+$/, '');
+          const projectPrefix = (process.env.OSS_PROJECT_PREFIX || '').replace(/^\/+|\/+$/g, '');
+          const versionDir = [projectPrefix, 'releases', process.env.TAG].filter(Boolean).join('/');
+          const latestPath = path.join(dir, 'latest.json');
+          const latest = JSON.parse(fs.readFileSync(latestPath, 'utf8'));
+
+          const assets = fs.readdirSync(dir);
+          const findAsset = pattern => assets.find(name => pattern.test(name));
+          const macUpdate = findAsset(/aarch64\.app\.tar\.gz$/);
+          const winUpdate = findAsset(/x64-setup\.exe$/);
+
+          if (!macUpdate || !winUpdate) {
+            throw new Error(`Missing updater assets. mac=${macUpdate || ''}, win=${winUpdate || ''}`);
+          }
+
+          for (const key of ['darwin-aarch64', 'darwin-aarch64-app']) {
+            if (latest.platforms[key]) {
+              latest.platforms[key].url = `${baseUrl}/${versionDir}/${macUpdate}`;
+            }
+          }
+          for (const key of ['windows-x86_64', 'windows-x86_64-nsis']) {
+            if (latest.platforms[key]) {
+              latest.platforms[key].url = `${baseUrl}/${versionDir}/${winUpdate}`;
+            }
+          }
+
+          fs.writeFileSync(latestPath, JSON.stringify(latest, null, 2) + '\n');
+          NODE
+          mkdir -p oss-upload/"$version_dir"
+          mkdir -p oss-upload/"$latest_dir"
+          cp release-assets/* oss-upload/"$version_dir"/
+          cp release-assets/latest.json oss-upload/"$latest_dir"/latest.json
+
+      - name: Upload updater assets to Aliyun OSS
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install oss2
+          python3 <<'PY'
+          import os
+          import pathlib
+          import oss2
+
+          required = [
+              "ALIYUN_ACCESS_KEY_ID",
+              "ALIYUN_ACCESS_KEY_SECRET",
+              "OSS_BUCKET",
+              "OSS_ENDPOINT",
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit(f"Missing required OSS config: {', '.join(missing)}")
+
+          auth = oss2.Auth(os.environ["ALIYUN_ACCESS_KEY_ID"], os.environ["ALIYUN_ACCESS_KEY_SECRET"])
+          bucket = oss2.Bucket(auth, os.environ["OSS_ENDPOINT"], os.environ["OSS_BUCKET"])
+          root = pathlib.Path("oss-upload")
+
+          for file_path in root.rglob("*"):
+              if not file_path.is_file():
+                  continue
+              object_key = file_path.relative_to(root).as_posix()
+              headers = {}
+              if object_key.endswith(".json"):
+                  headers["Content-Type"] = "application/json; charset=utf-8"
+                  headers["Cache-Control"] = "no-cache"
+              bucket.put_object_from_file(object_key, str(file_path), headers=headers)
+              print(f"uploaded oss://{os.environ['OSS_BUCKET']}/{object_key}")
+          PY

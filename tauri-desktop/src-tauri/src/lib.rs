@@ -3225,6 +3225,8 @@ fn stable_hash(value: &str) -> u64 {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             list_search_sources,
             get_search_settings,

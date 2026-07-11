@@ -1,4 +1,10 @@
 import { invoke as tauriInvoke } from '@tauri-apps/api/core'
+import { getVersion } from '@tauri-apps/api/app'
+import { relaunch } from '@tauri-apps/plugin-process'
+import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater'
+
+const UPDATE_CHECK_TIMEOUT_MS = 15000
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 120000
 
 export interface SearchSource {
   id: string
@@ -173,7 +179,12 @@ export interface SearchResponse {
   searchPlan: SearchPlan
 }
 
-function isTauriRuntime() {
+export interface UpdateCheckResult {
+  currentVersion: string
+  update?: Update
+}
+
+export function isTauriRuntime() {
   return typeof window !== 'undefined' && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
 }
 
@@ -182,6 +193,34 @@ function invoke<T>(command: string, args?: Parameters<typeof tauriInvoke>[1]) {
     return Promise.reject(new Error('当前页面需要在影岁桌面客户端中运行，请通过 Tauri 开发模式或已安装的桌面应用打开。'))
   }
   return tauriInvoke<T>(command, args)
+}
+
+export function getCurrentVersion() {
+  return getVersion()
+}
+
+export function formatUpdateError(error: unknown) {
+  const text = String(error)
+  if (text.includes('error sending request') || text.includes('timed out') || text.includes('timeout')) {
+    return '连接更新服务失败，请稍后重试或检查当前网络。'
+  }
+  return text
+}
+
+export async function checkAppUpdate(): Promise<UpdateCheckResult> {
+  const update = await check({ timeout: UPDATE_CHECK_TIMEOUT_MS })
+  return {
+    currentVersion: update?.currentVersion || await getVersion(),
+    update: update || undefined
+  }
+}
+
+export async function installAppUpdate(
+  update: Update,
+  onEvent: (event: DownloadEvent) => void
+) {
+  await update.downloadAndInstall(onEvent, { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS })
+  await relaunch()
 }
 
 export function listSearchSources(settings?: SearchSettings) {

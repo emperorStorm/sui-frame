@@ -15,7 +15,8 @@
         </button>
       </a-tooltip>
       <div class="rail-spacer"></div>
-      <a-tooltip title="桌面端 v0.1.0">
+      <AppNotificationCenter />
+      <a-tooltip :title="appVersion ? `桌面端 v${appVersion}` : '桌面端'">
         <button class="rail-button" type="button" @click="openSettingsPanel">
           <Settings :size="22" />
         </button>
@@ -228,6 +229,36 @@
       @ok="saveSettingsPanel"
     >
       <div class="settings-form">
+        <section class="settings-section update-section">
+          <div class="settings-section-head">
+            <div>
+              <h3>软件更新</h3>
+              <p>{{ updateStatus }}</p>
+            </div>
+            <a-button type="primary" :loading="checking || installing" :disabled="installing" @click="checkUpdate">
+              <template #icon><RefreshCw :size="16" /></template>
+              检查更新
+            </a-button>
+          </div>
+          <div class="update-grid">
+            <div>
+              <span>当前版本</span>
+              <strong>{{ appVersion || '读取中' }}</strong>
+            </div>
+            <div>
+              <span>更新源</span>
+              <strong>OSS 稳定通道</strong>
+            </div>
+          </div>
+          <a-progress
+            v-if="installing"
+            class="update-progress"
+            :percent="updateProgress"
+            :show-info="false"
+            size="small"
+          />
+        </section>
+
         <section class="settings-section">
           <div class="settings-section-head">
             <div>
@@ -385,8 +416,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { message } from 'ant-design-vue'
+import { computed, h, onMounted, ref } from 'vue'
+import { message, Modal } from 'ant-design-vue'
 import {
   Activity,
   CheckCircle2,
@@ -402,10 +433,15 @@ import {
   Trash2,
   X
 } from 'lucide-vue-next'
+import AppNotificationCenter from '../components/AppNotificationCenter.vue'
 import {
+  checkAppUpdate,
+  formatUpdateError,
+  getCurrentVersion,
   getSearchSettings,
   getResourceDetail,
   importCmsSources,
+  installAppUpdate,
   listSearchSources,
   openExternalUrl,
   saveSearchSettings,
@@ -422,7 +458,8 @@ import {
   type SearchSettings,
   type SearchSource,
   type SourceCoverage,
-  type SourceSearchState
+  type SourceSearchState,
+  type UpdateCheckResult
 } from '../api/native'
 
 type EditablePansouEndpoint = PansouEndpointConfig & {
@@ -481,6 +518,11 @@ const settingsForm = ref<EditableSearchSettings>(cloneSettings(DEFAULT_SETTINGS)
 const cmsImportText = ref('')
 const cmsTesting = ref(false)
 const cmsHealthResults = ref<CmsHealthResult[]>([])
+const appVersion = ref('')
+const checking = ref(false)
+const installing = ref(false)
+const updateProgress = ref(0)
+const updateStatus = ref('可手动检查 OSS 稳定通道中的新版本')
 
 const enabledCount = computed(() => sources.value.filter((source) => source.enabled).length)
 const sourceGroups = computed(() => {
@@ -509,12 +551,89 @@ const resultHint = computed(() => {
 
 onMounted(async () => {
   try {
+    await loadCurrentVersion()
     await loadSettings()
     await refreshSources()
   } catch (error) {
     message.error(String(error))
   }
 })
+
+async function loadCurrentVersion() {
+  try {
+    appVersion.value = await getCurrentVersion()
+  } catch {
+    appVersion.value = ''
+  }
+}
+
+async function checkUpdate() {
+  if (checking.value || installing.value) return
+  checking.value = true
+  updateStatus.value = '正在检查新版本'
+  try {
+    const result = await checkAppUpdate()
+    appVersion.value = result.currentVersion
+    if (!result.update) {
+      updateStatus.value = '已是最新版本'
+      message.success('已是最新版本')
+      return
+    }
+    updateStatus.value = `发现新版本 ${result.update.version}`
+    Modal.confirm({
+      title: '发现新版本',
+      content: h('div', { class: 'update-confirm' }, [
+        h('p', `当前版本：${result.currentVersion}`),
+        h('p', `最新版本：${result.update.version}`),
+        result.update.body
+          ? h('div', [
+              h('p', '更新内容：'),
+              h('pre', { class: 'update-body' }, result.update.body)
+            ])
+          : null
+      ]),
+      okText: '立即更新',
+      cancelText: '暂不更新',
+      onOk: () => installUpdate(result.update!)
+    })
+  } catch (error) {
+    updateStatus.value = '检查更新失败'
+    message.error(formatUpdateError(error))
+  } finally {
+    checking.value = false
+  }
+}
+
+async function installUpdate(update: NonNullable<UpdateCheckResult['update']>) {
+  installing.value = true
+  updateProgress.value = 0
+  updateStatus.value = '正在下载更新'
+  let downloadedBytes = 0
+  let totalBytes = 0
+  try {
+    await installAppUpdate(update, event => {
+      if (event.event === 'Started') {
+        downloadedBytes = 0
+        totalBytes = event.data.contentLength || 0
+        updateProgress.value = 0
+      }
+      if (event.event === 'Progress') {
+        downloadedBytes += event.data.chunkLength
+        updateProgress.value = totalBytes
+          ? Math.min(Math.round((downloadedBytes / totalBytes) * 100), 99)
+          : Math.max(updateProgress.value, 1)
+      }
+      if (event.event === 'Finished') {
+        updateProgress.value = 100
+        updateStatus.value = '更新安装完成，正在重启'
+      }
+    })
+  } catch (error) {
+    installing.value = false
+    updateStatus.value = downloadedBytes > 0 ? '更新安装失败' : '更新下载失败'
+    message.error(formatUpdateError(error))
+  }
+}
 
 function toggleSource(sourceId: string) {
   if (selectedSourceIds.value.includes(sourceId)) {
@@ -1377,6 +1496,48 @@ function escapeHtml(text: string) {
   line-height: 1.5;
 }
 
+.update-section {
+  background: #eefaf8;
+  border-color: #c7e9e4;
+}
+
+.update-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.update-grid > div {
+  background: #ffffff;
+  border: 1px solid #dce9e7;
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+}
+
+.update-grid span {
+  color: #718196;
+  font-size: 12px;
+}
+
+.update-grid strong {
+  color: #1f2933;
+  font-size: 15px;
+}
+
+.update-progress {
+  max-width: 360px;
+}
+
+:global(.update-body) {
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .settings-actions,
 .settings-checks {
   display: flex;
@@ -1580,6 +1741,10 @@ function escapeHtml(text: string) {
   .coverage-head,
   .settings-section-head {
     flex-direction: column;
+  }
+
+  .update-grid {
+    grid-template-columns: 1fr;
   }
 
   .pool-row,

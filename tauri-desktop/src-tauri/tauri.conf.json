@@ -27,6 +27,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,6 +38,17 @@
     ],
     "macOS": {
       "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzRkI5RTdGNUEyRUIzQTYKUldTbXN5NWFmNTc3b3pIRDdoR1pzdlhyREdoY2hIRXhyUzRFTzkwa3ExWlNDU281T0pPbkFsZlMK",
+      "endpoints": [
+        "https://suisui-package.oss-cn-hangzhou.aliyuncs.com/sui-frame/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
