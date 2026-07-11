@@ -1,14 +1,15 @@
 {
   "name": "sui-frame-tauri-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "cd ../desktop-client && npm run dev",
     "build:web": "cd ../desktop-client && npm run build",
+    "prepare:pansou": "node scripts/prepare-pansou-sidecar.mjs",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "npm run build:web && tauri build"
+    "tauri:dev": "npm run prepare:pansou && tauri dev",
+    "tauri:build": "npm run prepare:pansou && npm run build:web && tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"

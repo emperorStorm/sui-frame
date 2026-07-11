@@ -122,12 +122,21 @@ jobs:
         with:
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.9'
+
       - name: Install frontend dependencies
         run: npm ci
         working-directory: desktop-client
 
       - name: Install Tauri dependencies
         run: npm ci
+        working-directory: tauri-desktop
+
+      - name: Prepare PanSou sidecar
+        run: npm run prepare:pansou
         working-directory: tauri-desktop
 
       - name: Sync release version

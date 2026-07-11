@@ -7,14 +7,43 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri_plugin_shell::{process::CommandChild, ShellExt};
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36";
 const SETTINGS_FILE: &str = "search-settings.json";
 const RULE_SOURCE_FILE: &str = "rules/sources/default.json";
+const EMBEDDED_PANSOU_SOURCE_ID: &str = "embedded-pansou";
+const EMBEDDED_PANSOU_SIDECAR: &str = "pansou-sidecar";
+const EMBEDDED_PANSOU_DEFAULT_PORT: u16 = 10323;
+const EMBEDDED_PANSOU_DEFAULT_PLUGINS: &[&str] = &[
+    "labi",
+    "zhizhen",
+    "shandian",
+    "duoduo",
+    "muou",
+    "wanou",
+    "hunhepan",
+    "jikepan",
+    "panwiki",
+    "pansearch",
+    "qupansou",
+    "hdr4k",
+    "pan666",
+    "susu",
+    "fox4k",
+    "pianku",
+    "clmao",
+    "hdmoli",
+    "yuhuage",
+    "xinjuc",
+    "aikanzy",
+];
 const PAGE_SEARCH_DEPTH: u32 = 3;
 const BOOST_WORDS: &[&str] = &[
     "全集",
@@ -121,6 +150,7 @@ struct SearchFilters {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct SearchSettings {
+    embedded_pansou: EmbeddedPansouConfig,
     pansou_endpoint: String,
     pansou_token: String,
     pansou_refresh: bool,
@@ -140,6 +170,7 @@ struct SearchSettings {
 impl Default for SearchSettings {
     fn default() -> Self {
         Self {
+            embedded_pansou: EmbeddedPansouConfig::default(),
             pansou_endpoint: String::new(),
             pansou_token: String::new(),
             pansou_refresh: false,
@@ -154,6 +185,41 @@ impl Default for SearchSettings {
             cms_sources: Vec::new(),
             indexers: Vec::new(),
             tmdb_api_key: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct EmbeddedPansouConfig {
+    enabled: bool,
+    auto_start: bool,
+    port: u16,
+    src: String,
+    channels: Vec<String>,
+    plugins: Vec<String>,
+    cloud_types: Vec<String>,
+    refresh: bool,
+    cache: bool,
+    concurrency: usize,
+}
+
+impl Default for EmbeddedPansouConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_start: true,
+            port: EMBEDDED_PANSOU_DEFAULT_PORT,
+            src: "all".to_string(),
+            channels: Vec::new(),
+            plugins: EMBEDDED_PANSOU_DEFAULT_PLUGINS
+                .iter()
+                .map(|item| item.to_string())
+                .collect(),
+            cloud_types: Vec::new(),
+            refresh: false,
+            cache: true,
+            concurrency: 4,
         }
     }
 }
@@ -209,6 +275,49 @@ struct CmsHealthResult {
     count: usize,
     elapsed_ms: u128,
     message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EmbeddedPansouStatus {
+    enabled: bool,
+    running: bool,
+    reused: bool,
+    endpoint: String,
+    port: u16,
+    message: String,
+}
+
+impl Default for EmbeddedPansouStatus {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            running: false,
+            reused: false,
+            endpoint: embedded_pansou_endpoint(EMBEDDED_PANSOU_DEFAULT_PORT),
+            port: EMBEDDED_PANSOU_DEFAULT_PORT,
+            message: "内置 PanSou 尚未启动".to_string(),
+        }
+    }
+}
+
+struct EmbeddedPansouRuntime {
+    child: Option<CommandChild>,
+    status: EmbeddedPansouStatus,
+}
+
+impl Default for EmbeddedPansouRuntime {
+    fn default() -> Self {
+        Self {
+            child: None,
+            status: EmbeddedPansouStatus::default(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct EmbeddedPansouState {
+    runtime: Mutex<EmbeddedPansouRuntime>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,6 +414,15 @@ struct ResourceDetail {
     url: String,
     source_name: String,
     message: String,
+    validation_status: String,
+    can_open: bool,
+    validation_message: String,
+}
+
+struct LinkValidation {
+    status: String,
+    can_open: bool,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,8 +457,16 @@ struct SearchOutcome {
 }
 
 #[tauri::command]
-fn list_search_sources(settings: Option<SearchSettings>) -> Vec<SearchSource> {
-    search_sources(&settings.unwrap_or_default())
+async fn list_search_sources(
+    app: AppHandle,
+    settings: Option<SearchSettings>,
+) -> Vec<SearchSource> {
+    let settings = normalize_settings(settings.unwrap_or_default());
+    if settings.embedded_pansou.enabled && settings.embedded_pansou.auto_start {
+        sync_embedded_pansou(&app, &settings.embedded_pansou).await;
+    }
+    let status = embedded_pansou_status_from_state(&app);
+    search_sources_with_embedded(&settings, Some(status))
 }
 
 #[tauri::command]
@@ -349,15 +475,34 @@ fn get_search_settings(app: AppHandle) -> Result<SearchSettings, String> {
 }
 
 #[tauri::command]
-fn save_search_settings(
+async fn save_search_settings(
     app: AppHandle,
     settings: SearchSettings,
 ) -> Result<SearchSettings, String> {
+    let old_settings = read_search_settings(&app).unwrap_or_default();
     let normalized = normalize_settings(settings);
     let path = settings_path(&app)?;
     let text = serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?;
     fs::write(path, text).map_err(|error| error.to_string())?;
+    if embedded_pansou_config_changed(&old_settings.embedded_pansou, &normalized.embedded_pansou)
+        || normalized.embedded_pansou.enabled
+    {
+        sync_embedded_pansou(&app, &normalized.embedded_pansou).await;
+    }
     Ok(normalized)
+}
+
+#[tauri::command]
+fn get_embedded_pansou_status(app: AppHandle) -> EmbeddedPansouStatus {
+    embedded_pansou_status_from_state(&app)
+}
+
+#[tauri::command]
+async fn restart_embedded_pansou(app: AppHandle, settings: SearchSettings) -> EmbeddedPansouStatus {
+    let normalized = normalize_settings(settings);
+    stop_owned_embedded_pansou(&app, "正在重启内置 PanSou");
+    sync_embedded_pansou(&app, &normalized.embedded_pansou).await;
+    embedded_pansou_status_from_state(&app)
 }
 
 #[tauri::command]
@@ -416,6 +561,13 @@ async fn search_resources(
         .map_err(|error| error.to_string())?;
     let page_no = page.unwrap_or(1).max(1);
     let selected = resolve_selected_sources(&filters, &settings);
+    if selected
+        .iter()
+        .any(|source| source.id == EMBEDDED_PANSOU_SOURCE_ID)
+        && settings.embedded_pansou.enabled
+    {
+        sync_embedded_pansou(&app, &settings.embedded_pansou).await;
+    }
     let tasks = selected.into_iter().map(|source| {
         search_source(
             client.clone(),
@@ -485,22 +637,13 @@ async fn get_resource_detail(item: ResourceItem) -> Result<ResourceDetail, Strin
         return Err("未找到可跳转地址".to_string());
     }
 
-    Ok(ResourceDetail {
-        title: item.title,
-        url,
-        source_name: item.source_name,
-        message: "已获得跳转地址。".to_string(),
-    })
+    detail_with_url(&item, url, "已获得跳转地址。").await
 }
 
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     let text = url.trim();
-    let allowed = text.starts_with("http://")
-        || text.starts_with("https://")
-        || text.starts_with("magnet:")
-        || text.starts_with("ed2k://");
-    if !allowed {
+    if !is_allowed_external_url(text) {
         return Err("只允许打开 http、https、magnet 或 ed2k 地址".to_string());
     }
     open::that(text).map_err(|error| error.to_string())
@@ -532,6 +675,9 @@ async fn search_source(
 
     let result = match source.kind.as_str() {
         "pansou" => search_pansou(&client, &source, &plan, &filters, &settings).await,
+        EMBEDDED_PANSOU_SOURCE_ID => {
+            search_embedded_pansou(&client, &source, &plan, &filters, &settings).await
+        }
         "cms-v10" => search_cms_v10(&client, &source, &plan, &settings).await,
         "torznab" | "newznab" => search_indexer(&client, &source, &plan, &settings).await,
         "hunhepan" => {
@@ -628,18 +774,27 @@ async fn search_source(
 
     let elapsed_ms = start.elapsed().as_millis();
     match result {
-        Ok(items) if items.is_empty() => outcome(
-            source,
-            items,
-            "empty",
-            "未返回匹配结果".to_string(),
-            elapsed_ms,
-        ),
         Ok(items) => {
+            let items = filter_valid_resource_items(items);
+            if items.is_empty() {
+                return outcome(
+                    source,
+                    items,
+                    "empty",
+                    "未返回匹配结果".to_string(),
+                    elapsed_ms,
+                );
+            }
             let message = format!("返回 {} 条", items.len());
             outcome(source, items, "success", message, elapsed_ms)
         }
-        Err(error) => outcome(source, Vec::new(), "failed", error, elapsed_ms),
+        Err(error) => outcome(
+            source,
+            Vec::new(),
+            "failed",
+            friendly_search_error(&error),
+            elapsed_ms,
+        ),
     }
 }
 
@@ -973,6 +1128,31 @@ async fn search_pansou(
     if endpoint.endpoint.trim().is_empty() {
         return Err("PanSou endpoint 未配置".to_string());
     }
+    search_pansou_endpoint(client, source, plan, filters, settings, endpoint).await
+}
+
+async fn search_embedded_pansou(
+    client: &Client,
+    source: &SearchSource,
+    plan: &SearchPlan,
+    filters: &SearchFilters,
+    settings: &SearchSettings,
+) -> Result<Vec<ResourceItem>, String> {
+    if !settings.embedded_pansou.enabled {
+        return Err("内置 PanSou 已关闭".to_string());
+    }
+    let endpoint = embedded_pansou_endpoint_config(&settings.embedded_pansou);
+    search_pansou_endpoint(client, source, plan, filters, settings, &endpoint).await
+}
+
+async fn search_pansou_endpoint(
+    client: &Client,
+    source: &SearchSource,
+    plan: &SearchPlan,
+    filters: &SearchFilters,
+    settings: &SearchSettings,
+    endpoint: &PansouEndpointConfig,
+) -> Result<Vec<ResourceItem>, String> {
     let mut output = Vec::new();
     for term in plan.search_terms.iter().take(4) {
         let mut params = vec![("kw".to_string(), term.clone())];
@@ -1734,12 +1914,7 @@ async fn resolve_aliso_detail(item: &ResourceItem) -> Result<ResourceDetail, Str
     if !pwd.is_empty() {
         url = format!("{}?pwd={}", url, pwd);
     }
-    Ok(ResourceDetail {
-        title: item.title.clone(),
-        url,
-        source_name: item.source_name.clone(),
-        message: message.to_string(),
-    })
+    detail_with_url(item, url, message).await
 }
 
 async fn resolve_public_page_detail(item: &ResourceItem) -> Result<ResourceDetail, String> {
@@ -1749,19 +1924,26 @@ async fn resolve_public_page_detail(item: &ResourceItem) -> Result<ResourceDetai
         .build()
         .map_err(|error| error.to_string())?;
     let html = fetch_text(&client, &item.payload.detail_url).await?;
-    let document = Html::parse_document(&html);
-    if item.source_id == "cuppaso" {
-        if let Ok(selector) = selector(".btn-green") {
-            if let Some(url) = document
-                .select(&selector)
-                .next()
-                .and_then(|node| node.value().attr("href"))
-                .map(|href| href.to_string())
-                .filter(|href| !href.is_empty())
-            {
-                return detail_with_url(item, url, "已解析到咔帕搜索详情页中的网盘链接。");
+    let resolved_page_url = {
+        let document = Html::parse_document(&html);
+        if item.source_id == "cuppaso" {
+            if let Ok(selector) = selector(".btn-green") {
+                document
+                    .select(&selector)
+                    .next()
+                    .and_then(|node| node.value().attr("href"))
+                    .map(|href| href.to_string())
+                    .filter(|href| !href.is_empty())
+                    .map(|url| (url, "已解析到咔帕搜索详情页中的网盘链接。"))
+            } else {
+                None
             }
+        } else {
+            None
         }
+    };
+    if let Some((url, message)) = resolved_page_url {
+        return detail_with_url(item, url, message).await;
     }
     if item.source_id == "quarkso" {
         if let Some(url) = Regex::new(r#""(https?://pan\.quark\.cn/s/[A-Za-z0-9_-]+)""#)
@@ -1769,30 +1951,35 @@ async fn resolve_public_page_detail(item: &ResourceItem) -> Result<ResourceDetai
             .captures(&html)
             .and_then(|captures| captures.get(1).map(|value| value.as_str().to_string()))
         {
-            return detail_with_url(item, url, "已解析到夸克搜详情页中的网盘链接。");
+            return detail_with_url(item, url, "已解析到夸克搜详情页中的网盘链接。").await;
         }
     }
     let links = find_disk_links(&html);
     if let Some(url) = links.first() {
-        return detail_with_url(item, url.clone(), "已从来源详情页提取到网盘链接。");
+        return detail_with_url(item, url.clone(), "已从来源详情页提取到网盘链接。").await;
     }
     detail_with_url(
         item,
         item.payload.detail_url.clone(),
         "未解析到最终网盘链接，已回退到来源详情页。",
     )
+    .await
 }
 
-fn detail_with_url(
+async fn detail_with_url(
     item: &ResourceItem,
     url: String,
     message: &str,
 ) -> Result<ResourceDetail, String> {
+    let validation = validate_resource_url(&url).await;
     Ok(ResourceDetail {
         title: item.title.clone(),
         url,
         source_name: item.source_name.clone(),
         message: message.to_string(),
+        validation_status: validation.status,
+        can_open: validation.can_open,
+        validation_message: validation.message,
     })
 }
 
@@ -1801,12 +1988,140 @@ async fn fetch_text(client: &Client, url: &str) -> Result<String, String> {
         .get(url)
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| friendly_search_error(&error.to_string()))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("请求失败：{}", status));
+        return Err("资源暂时无法访问，请稍后重试".to_string());
     }
-    response.text().await.map_err(|error| error.to_string())
+    response
+        .text()
+        .await
+        .map_err(|error| friendly_search_error(&error.to_string()))
+}
+
+async fn validate_resource_url(url: &str) -> LinkValidation {
+    let text = url.trim();
+    if text.is_empty() {
+        return invalid_link("未找到可校验的资源地址。");
+    }
+    if !is_allowed_external_url(text) {
+        return invalid_link("资源地址协议不受支持，已禁止直接打开。");
+    }
+    if text.starts_with("magnet:") || text.starts_with("ed2k://") {
+        return LinkValidation {
+            status: "warning".to_string(),
+            can_open: true,
+            message:
+                "已识别为下载协议链接，无法通过网页方式确认可访问性，可复制后使用对应客户端打开。"
+                    .to_string(),
+        };
+    }
+
+    let client = match Client::builder()
+        .timeout(Duration::from_secs(8))
+        .user_agent(USER_AGENT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return LinkValidation {
+                status: "warning".to_string(),
+                can_open: true,
+                message: "链接格式有效，但当前无法创建校验请求，可尝试在浏览器中打开确认。"
+                    .to_string(),
+            }
+        }
+    };
+    let status = match client.head(text).send().await {
+        Ok(response) => Some(response.status().as_u16()),
+        Err(_) => match client.get(text).header("range", "bytes=0-0").send().await {
+            Ok(response) => Some(response.status().as_u16()),
+            Err(_) => None,
+        },
+    };
+    let is_disk_link = has_disk_host(text);
+    match status {
+        Some(200..=399) if is_disk_link => LinkValidation {
+            status: "valid".to_string(),
+            can_open: true,
+            message: "资源链接已通过访问校验，可直接打开。".to_string(),
+        },
+        Some(200..=399) => LinkValidation {
+            status: "warning".to_string(),
+            can_open: true,
+            message: "链接可访问，但未确认是最终网盘地址，可打开后继续确认。".to_string(),
+        },
+        Some(401) | Some(403) | Some(405) | Some(429) => LinkValidation {
+            status: "warning".to_string(),
+            can_open: true,
+            message: "链接可能需要浏览器环境或被站点限制访问，可尝试打开后确认。".to_string(),
+        },
+        Some(404) | Some(410) => invalid_link("资源链接已失效或页面不存在。"),
+        Some(_) => LinkValidation {
+            status: "warning".to_string(),
+            can_open: true,
+            message: "链接有响应但状态异常，可尝试打开后确认资源是否仍可用。".to_string(),
+        },
+        None => LinkValidation {
+            status: "warning".to_string(),
+            can_open: true,
+            message: "当前网络无法确认链接可访问性，可尝试在浏览器中打开确认。".to_string(),
+        },
+    }
+}
+
+fn invalid_link(message: &str) -> LinkValidation {
+    LinkValidation {
+        status: "invalid".to_string(),
+        can_open: false,
+        message: message.to_string(),
+    }
+}
+
+fn is_allowed_external_url(text: &str) -> bool {
+    text.starts_with("http://")
+        || text.starts_with("https://")
+        || text.starts_with("magnet:")
+        || text.starts_with("ed2k://")
+}
+
+fn filter_valid_resource_items(items: Vec<ResourceItem>) -> Vec<ResourceItem> {
+    items
+        .into_iter()
+        .filter(is_basic_valid_resource_item)
+        .collect()
+}
+
+fn is_basic_valid_resource_item(item: &ResourceItem) -> bool {
+    if item.title.trim().is_empty() {
+        return false;
+    }
+    let link = first_non_empty(&[&item.payload.final_url, &item.url, &item.payload.detail_url]);
+    !link.is_empty() && is_allowed_external_url(&link)
+}
+
+fn friendly_search_error(error: &str) -> String {
+    let lower = error.to_lowercase();
+    if lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("error sending request")
+        || lower.contains("connection")
+        || lower.contains("dns")
+        || lower.contains("network")
+    {
+        return "资源暂时无法访问，请稍后重试".to_string();
+    }
+    if lower.contains("json")
+        || lower.contains("decode")
+        || lower.contains("decoding")
+        || lower.contains("解析")
+    {
+        return "资源返回内容异常，暂时无法解析".to_string();
+    }
+    if lower.contains("http") || error.contains("请求失败") {
+        return "资源暂时无法访问，请稍后重试".to_string();
+    }
+    "资源暂时无法访问，请稍后重试".to_string()
 }
 
 async fn build_search_plan(query: &str, settings: &SearchSettings) -> SearchPlan {
@@ -2342,6 +2657,10 @@ fn has_disk_link(item: &ResourceItem) -> bool {
         "{} {} {}",
         item.url, item.payload.final_url, item.payload.detail_url
     );
+    has_disk_host(&text)
+}
+
+fn has_disk_host(text: &str) -> bool {
     DISK_HOST_MARKERS.iter().any(|marker| text.contains(marker))
 }
 
@@ -2378,7 +2697,40 @@ fn build_coverage(states: &[SourceSearchState]) -> Vec<SourceCoverage> {
 }
 
 fn search_sources(settings: &SearchSettings) -> Vec<SearchSource> {
+    search_sources_with_embedded(settings, None)
+}
+
+fn search_sources_with_embedded(
+    settings: &SearchSettings,
+    embedded_status: Option<EmbeddedPansouStatus>,
+) -> Vec<SearchSource> {
     let mut sources = Vec::new();
+    if settings.embedded_pansou.enabled {
+        let fallback_status = EmbeddedPansouStatus {
+            enabled: settings.embedded_pansou.enabled,
+            running: true,
+            reused: false,
+            endpoint: embedded_pansou_endpoint(settings.embedded_pansou.port),
+            port: settings.embedded_pansou.port,
+            message: "内置 PanSou 将在搜索前自动启动".to_string(),
+        };
+        let status = embedded_status.unwrap_or(fallback_status);
+        sources.push(SearchSource {
+            id: EMBEDDED_PANSOU_SOURCE_ID.to_string(),
+            name: "内置 PanSou".to_string(),
+            group: "内置聚合源".to_string(),
+            enabled: settings.embedded_pansou.enabled && status.running,
+            description: status.message,
+            kind: EMBEDDED_PANSOU_SOURCE_ID.to_string(),
+            config_index: None,
+            health_score: if status.running { 76 } else { 45 },
+            status: if status.running {
+                "configured".to_string()
+            } else {
+                "requiresConfig".to_string()
+            },
+        });
+    }
     for (index, endpoint) in settings.pansou_endpoints.iter().enumerate() {
         sources.push(SearchSource {
             id: source_config_id("pansou", index, &endpoint.endpoint),
@@ -2864,6 +3216,7 @@ fn cms_health_failed(
 }
 
 fn normalize_settings(settings: SearchSettings) -> SearchSettings {
+    let embedded_pansou = normalize_embedded_pansou_config(settings.embedded_pansou);
     let mut pansou_endpoints = settings
         .pansou_endpoints
         .into_iter()
@@ -2933,6 +3286,7 @@ fn normalize_settings(settings: SearchSettings) -> SearchSettings {
         .collect::<Vec<_>>();
 
     SearchSettings {
+        embedded_pansou,
         pansou_endpoint,
         pansou_token,
         pansou_refresh,
@@ -2947,6 +3301,32 @@ fn normalize_settings(settings: SearchSettings) -> SearchSettings {
         cms_sources,
         indexers,
         tmdb_api_key: settings.tmdb_api_key.trim().to_string(),
+    }
+}
+
+fn normalize_embedded_pansou_config(config: EmbeddedPansouConfig) -> EmbeddedPansouConfig {
+    let mut plugins = normalize_string_list(config.plugins);
+    if plugins.is_empty() {
+        plugins = EMBEDDED_PANSOU_DEFAULT_PLUGINS
+            .iter()
+            .map(|item| item.to_string())
+            .collect();
+    }
+    EmbeddedPansouConfig {
+        enabled: config.enabled,
+        auto_start: config.auto_start,
+        port: if config.port == 0 {
+            EMBEDDED_PANSOU_DEFAULT_PORT
+        } else {
+            config.port
+        },
+        src: normalize_pansou_src(&config.src),
+        channels: normalize_string_list(config.channels),
+        plugins,
+        cloud_types: normalize_string_list(config.cloud_types),
+        refresh: config.refresh,
+        cache: config.cache,
+        concurrency: config.concurrency.clamp(1, 8),
     }
 }
 
@@ -3223,22 +3603,281 @@ fn stable_hash(value: &str) -> u64 {
     hash
 }
 
+fn embedded_pansou_endpoint(port: u16) -> String {
+    format!("http://127.0.0.1:{}", port)
+}
+
+fn embedded_pansou_endpoint_config(config: &EmbeddedPansouConfig) -> PansouEndpointConfig {
+    PansouEndpointConfig {
+        id: EMBEDDED_PANSOU_SOURCE_ID.to_string(),
+        name: "内置 PanSou".to_string(),
+        endpoint: embedded_pansou_endpoint(config.port),
+        token: String::new(),
+        enabled: config.enabled,
+        refresh: config.refresh,
+        channels: config.channels.clone(),
+        plugins: config.plugins.clone(),
+        src: config.src.clone(),
+        cloud_types: config.cloud_types.clone(),
+        concurrency: config.concurrency,
+    }
+}
+
+fn embedded_pansou_status_from_state(app: &AppHandle) -> EmbeddedPansouStatus {
+    app.state::<EmbeddedPansouState>()
+        .runtime
+        .lock()
+        .map(|runtime| runtime.status.clone())
+        .unwrap_or_default()
+}
+
+fn set_embedded_pansou_status(app: &AppHandle, status: EmbeddedPansouStatus) {
+    if let Ok(mut runtime) = app.state::<EmbeddedPansouState>().runtime.lock() {
+        runtime.status = status;
+    }
+}
+
+fn embedded_pansou_config_changed(
+    left: &EmbeddedPansouConfig,
+    right: &EmbeddedPansouConfig,
+) -> bool {
+    left.enabled != right.enabled
+        || left.auto_start != right.auto_start
+        || left.port != right.port
+        || left.src != right.src
+        || left.channels != right.channels
+        || left.plugins != right.plugins
+        || left.cloud_types != right.cloud_types
+        || left.refresh != right.refresh
+        || left.cache != right.cache
+        || left.concurrency != right.concurrency
+}
+
+fn stop_owned_embedded_pansou(app: &AppHandle, message: &str) {
+    if let Ok(mut runtime) = app.state::<EmbeddedPansouState>().runtime.lock() {
+        if let Some(child) = runtime.child.take() {
+            let _ = child.kill();
+        }
+        runtime.status.running = false;
+        runtime.status.reused = false;
+        runtime.status.message = message.to_string();
+    }
+}
+
+async fn sync_embedded_pansou(app: &AppHandle, config: &EmbeddedPansouConfig) {
+    let config = normalize_embedded_pansou_config(config.clone());
+    let endpoint = embedded_pansou_endpoint(config.port);
+    if !config.enabled || !config.auto_start {
+        stop_owned_embedded_pansou(app, "内置 PanSou 已关闭");
+        set_embedded_pansou_status(
+            app,
+            EmbeddedPansouStatus {
+                enabled: config.enabled,
+                running: false,
+                reused: false,
+                endpoint,
+                port: config.port,
+                message: if config.enabled {
+                    "内置 PanSou 未设置为自动启动".to_string()
+                } else {
+                    "内置 PanSou 已关闭".to_string()
+                },
+            },
+        );
+        return;
+    }
+
+    if check_embedded_pansou_health(config.port).await {
+        let reused = app
+            .state::<EmbeddedPansouState>()
+            .runtime
+            .lock()
+            .map(|runtime| runtime.child.is_none())
+            .unwrap_or(true);
+        set_embedded_pansou_status(
+            app,
+            EmbeddedPansouStatus {
+                enabled: true,
+                running: true,
+                reused,
+                endpoint,
+                port: config.port,
+                message: if reused {
+                    "已连接本机 PanSou".to_string()
+                } else {
+                    "内置 PanSou 运行中".to_string()
+                },
+            },
+        );
+        return;
+    }
+
+    stop_owned_embedded_pansou(app, "正在启动内置 PanSou");
+    if is_tcp_port_open(config.port) {
+        set_embedded_pansou_status(
+            app,
+            EmbeddedPansouStatus {
+                enabled: true,
+                running: false,
+                reused: false,
+                endpoint,
+                port: config.port,
+                message: format!("端口 {} 已被其他程序占用", config.port),
+            },
+        );
+        return;
+    }
+
+    match spawn_embedded_pansou(app, &config) {
+        Ok(child) => {
+            if let Ok(mut runtime) = app.state::<EmbeddedPansouState>().runtime.lock() {
+                runtime.child = Some(child);
+                runtime.status = EmbeddedPansouStatus {
+                    enabled: true,
+                    running: false,
+                    reused: false,
+                    endpoint: endpoint.clone(),
+                    port: config.port,
+                    message: "内置 PanSou 正在启动".to_string(),
+                };
+            }
+            for _ in 0..24 {
+                if check_embedded_pansou_health(config.port).await {
+                    set_embedded_pansou_status(
+                        app,
+                        EmbeddedPansouStatus {
+                            enabled: true,
+                            running: true,
+                            reused: false,
+                            endpoint,
+                            port: config.port,
+                            message: "内置 PanSou 运行中".to_string(),
+                        },
+                    );
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            stop_owned_embedded_pansou(app, "内置 PanSou 启动超时");
+            set_embedded_pansou_status(
+                app,
+                EmbeddedPansouStatus {
+                    enabled: true,
+                    running: false,
+                    reused: false,
+                    endpoint,
+                    port: config.port,
+                    message: "内置 PanSou 启动超时".to_string(),
+                },
+            );
+        }
+        Err(error) => {
+            set_embedded_pansou_status(
+                app,
+                EmbeddedPansouStatus {
+                    enabled: true,
+                    running: false,
+                    reused: false,
+                    endpoint,
+                    port: config.port,
+                    message: format!("内置 PanSou 启动失败：{}", error),
+                },
+            );
+        }
+    }
+}
+
+fn spawn_embedded_pansou(
+    app: &AppHandle,
+    config: &EmbeddedPansouConfig,
+) -> Result<CommandChild, String> {
+    let cache_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("pansou-cache");
+    fs::create_dir_all(&cache_dir).map_err(|error| error.to_string())?;
+    let cache_path = cache_dir.to_string_lossy().to_string();
+    let plugins = config.plugins.join(",");
+    let channels = config.channels.join(",");
+    let command = app
+        .shell()
+        .sidecar(EMBEDDED_PANSOU_SIDECAR)
+        .map_err(|error| error.to_string())?
+        .env("PORT", config.port.to_string())
+        .env("CACHE_ENABLED", if config.cache { "true" } else { "false" })
+        .env("CACHE_PATH", cache_path)
+        .env("CACHE_MAX_SIZE", "100")
+        .env("CACHE_TTL", "60")
+        .env("ASYNC_CACHE_TTL_HOURS", "1")
+        .env("ENABLED_PLUGINS", plugins)
+        .env("CHANNELS", channels);
+    let (_events, child) = command.spawn().map_err(|error| error.to_string())?;
+    Ok(child)
+}
+
+async fn check_embedded_pansou_health(port: u16) -> bool {
+    let client = match Client::builder()
+        .timeout(Duration::from_secs(2))
+        .user_agent(USER_AGENT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    client
+        .get(format!("{}/api/health", embedded_pansou_endpoint(port)))
+        .send()
+        .await
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
+}
+
+fn is_tcp_port_open(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .manage(EmbeddedPansouState::default())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let settings = read_search_settings(&handle).unwrap_or_default();
+                if settings.embedded_pansou.enabled && settings.embedded_pansou.auto_start {
+                    sync_embedded_pansou(&handle, &settings.embedded_pansou).await;
+                }
+            });
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if matches!(event, WindowEvent::CloseRequested { .. }) {
+                stop_owned_embedded_pansou(window.app_handle(), "窗口已关闭，内置 PanSou 已停止");
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_search_sources,
             get_search_settings,
             save_search_settings,
+            get_embedded_pansou_status,
+            restart_embedded_pansou,
             import_cms_sources,
             test_cms_sources,
             search_resources,
             get_resource_detail,
             open_external_url
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run sui-frame desktop app");
+        .build(tauri::generate_context!())
+        .expect("failed to build sui-frame desktop app")
+        .run(|app, event| {
+            if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+                stop_owned_embedded_pansou(app, "应用已退出，内置 PanSou 已停止");
+            }
+        });
 }
 
 #[cfg(test)]
@@ -3315,6 +3954,86 @@ mod tests {
         score_items(&mut items, &plan);
         items.sort_by(|left, right| right.relevance_score.cmp(&left.relevance_score));
         assert_eq!(items[0].title, "生命树 2026 全集");
+    }
+
+    #[test]
+    fn maps_raw_search_errors_to_friendly_message() {
+        assert_eq!(
+            friendly_search_error("error sending request for url (https://example.test?q=secret)"),
+            "资源暂时无法访问，请稍后重试"
+        );
+        assert_eq!(
+            friendly_search_error("error decoding response body"),
+            "资源返回内容异常，暂时无法解析"
+        );
+    }
+
+    #[test]
+    fn filters_empty_or_invalid_resource_items() {
+        let source = SearchSource {
+            id: "mock".to_string(),
+            name: "mock".to_string(),
+            group: "test".to_string(),
+            enabled: true,
+            description: String::new(),
+            kind: "mock".to_string(),
+            config_index: None,
+            health_score: 60,
+            status: "ready".to_string(),
+        };
+        let items = vec![
+            resource_item(
+                &source,
+                1,
+                "有效资源".to_string(),
+                "S01E01".to_string(),
+                "https://pan.quark.cn/s/abc".to_string(),
+                "https://pan.quark.cn/s/abc".to_string(),
+                String::new(),
+                "quark".to_string(),
+                String::new(),
+                vec![],
+            ),
+            resource_item(
+                &source,
+                2,
+                String::new(),
+                String::new(),
+                "https://pan.quark.cn/s/empty".to_string(),
+                "https://pan.quark.cn/s/empty".to_string(),
+                String::new(),
+                "quark".to_string(),
+                String::new(),
+                vec![],
+            ),
+            resource_item(
+                &source,
+                3,
+                "非法协议".to_string(),
+                "S01E02".to_string(),
+                "ftp://example.test/file".to_string(),
+                "ftp://example.test/file".to_string(),
+                String::new(),
+                "other".to_string(),
+                String::new(),
+                vec![],
+            ),
+        ];
+
+        let filtered = filter_valid_resource_items(items);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].title, "有效资源");
+    }
+
+    #[test]
+    fn classifies_detail_link_without_network_when_possible() {
+        let invalid = futures::executor::block_on(validate_resource_url("ftp://example.test/file"));
+        assert_eq!(invalid.status, "invalid");
+        assert!(!invalid.can_open);
+
+        let magnet = futures::executor::block_on(validate_resource_url("magnet:?xt=urn:btih:abc"));
+        assert_eq!(magnet.status, "warning");
+        assert!(magnet.can_open);
     }
 
     #[test]

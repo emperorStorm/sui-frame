@@ -27,6 +27,7 @@ export interface SearchFilters {
 }
 
 export interface SearchSettings {
+  embeddedPansou: EmbeddedPansouConfig
   pansouEndpoint: string
   pansouToken: string
   pansouRefresh: boolean
@@ -41,6 +42,28 @@ export interface SearchSettings {
   cmsSources: CmsSourceConfig[]
   indexers: IndexerConfig[]
   tmdbApiKey: string
+}
+
+export interface EmbeddedPansouConfig {
+  enabled: boolean
+  autoStart: boolean
+  port: number
+  src: 'all' | 'tg' | 'plugin'
+  channels: string[]
+  plugins: string[]
+  cloudTypes: string[]
+  refresh: boolean
+  cache: boolean
+  concurrency: number
+}
+
+export interface EmbeddedPansouStatus {
+  enabled: boolean
+  running: boolean
+  reused: boolean
+  endpoint: string
+  port: number
+  message: string
 }
 
 export interface PansouEndpointConfig {
@@ -155,6 +178,9 @@ export interface ResourceDetail {
   url: string
   sourceName: string
   message: string
+  validationStatus: 'valid' | 'warning' | 'invalid'
+  canOpen: boolean
+  validationMessage: string
 }
 
 export interface SourceSearchState {
@@ -233,6 +259,14 @@ export function getSearchSettings() {
 
 export function saveSearchSettings(settings: SearchSettings) {
   return invoke<SearchSettings>('save_search_settings', { settings })
+}
+
+export function getEmbeddedPansouStatus() {
+  return invoke<EmbeddedPansouStatus>('get_embedded_pansou_status')
+}
+
+export function restartEmbeddedPansou(settings: SearchSettings) {
+  return invoke<EmbeddedPansouStatus>('restart_embedded_pansou', { settings })
 }
 
 export function importCmsSources(text: string, settings: SearchSettings) {

@@ -2,7 +2,7 @@
 
 [中文说明](README.zh-CN.md)
 
-sui-frame, named "影岁", is a local-first desktop app for searching video-related resource links across multiple public disk-search sources. The first version focuses on a personal desktop workflow on Windows and macOS. Mobile and server directories are reserved but not implemented.
+sui-frame is a local-first desktop app for searching video-related resource links across multiple public disk-search sources. The first version focuses on a personal desktop workflow on Windows and macOS, with implementation centered on the desktop frontend and Tauri desktop shell. Mobile and server directories are reserved but not implemented.
 
 ## Structure
 
@@ -45,8 +45,8 @@ npm run tauri:build
 ## Features
 
 - Desktop search workbench with a main keyword box, source selection, disk-type filter, and exact-match option.
-- Media entity recognition. A query such as `胡歌 生命树` is normalized to the TV title `生命树` before resource search.
-- Built-in Rust search adapters inspired by the hunhepan rule-template model.
+- Media entity recognition that normalizes mixed keywords into more accurate media search terms before resource search.
+- Built-in Rust search adapters for public page parsing, result normalization, and link handoff.
 - Four-layer resource pool: PanSou endpoint pool, CMS V10 source pool, Torznab/Newznab indexers, and local rule plugins under `rules/sources/*.json`.
 - Built-in public page sources now include PanQuDuo and several disk-search pages in addition to Hunhepan, Pikasoo, and Aliso.
 - PanSou supports multiple user-configured endpoints plus `src`, channels, plugins, cloud types, cache, and refresh options.
@@ -57,7 +57,7 @@ npm run tauri:build
 - Result groups for high-confidence, possible, and low-confidence matches, with ranking reasons.
 - Result detail modal for resolving, copying, and opening the jump URL.
 - Settings for a self-hosted PanSou endpoint, CMS V10 endpoints, and a reserved TMDB API Key field.
-- Brand icon aligned with the "音岁" visual language while using a video play and film-frame metaphor.
+- Brand icon uses a dark rounded base, circular motion, and video play plus film-frame metaphors.
 
 ## Current Boundaries
 

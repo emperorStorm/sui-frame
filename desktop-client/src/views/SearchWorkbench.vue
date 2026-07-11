@@ -57,7 +57,7 @@
           <div v-for="group in sourceGroups" :key="group.name" class="source-group">
             <div class="source-group-title">
               <span>{{ group.name }}</span>
-              <small>{{ group.sources.filter((source) => source.enabled).length }} / {{ group.sources.length }}</small>
+              <small>{{ sourceGroupSummary(group) }}</small>
             </div>
             <div class="source-strip">
               <button
@@ -95,6 +95,7 @@
         </div>
       </section>
 
+      <div class="output-scroll">
       <section class="status-board" v-if="states.length">
         <div
           v-for="state in states"
@@ -107,8 +108,7 @@
           <LoaderCircle v-else-if="loading" class="spin" :size="18" />
           <Activity v-else :size="18" />
           <span>{{ state.sourceName }}</span>
-          <strong>{{ state.count }}</strong>
-          <small>{{ state.message }}</small>
+          <small>{{ statusMessage(state) }}</small>
         </div>
       </section>
 
@@ -217,6 +217,7 @@
           </section>
         </div>
       </section>
+      </div>
     </section>
 
     <a-modal
@@ -262,8 +263,60 @@
         <section class="settings-section">
           <div class="settings-section-head">
             <div>
-              <h3>PanSou 深度池</h3>
-              <p>支持多个 endpoint，并可配置 TG 频道、插件、来源范围和网盘类型。</p>
+              <h3>内置 PanSou</h3>
+              <p>{{ embeddedPansouStatus?.message || '随影岁启动的本地聚合搜索服务。' }}</p>
+            </div>
+            <div class="settings-actions">
+              <a-button :loading="embeddedPansouRestarting" @click="handleRestartEmbeddedPansou">
+                <template #icon><RefreshCw :size="16" /></template>
+                重启
+              </a-button>
+            </div>
+          </div>
+          <div class="embedded-pansou-panel">
+            <div class="embedded-status" :class="{ running: embeddedPansouStatus?.running }">
+              <Activity :size="18" />
+              <div>
+                <strong>{{ embeddedPansouStatus?.running ? '运行中' : '未运行' }}</strong>
+                <small>{{ settingsForm.embeddedPansou.enabled ? embeddedPansouEndpoint : '已关闭' }}</small>
+              </div>
+              <span>{{ embeddedPansouStatus?.reused ? '复用本机服务' : '影岁托管' }}</span>
+            </div>
+            <div class="embedded-controls">
+              <a-checkbox v-model:checked="settingsForm.embeddedPansou.enabled">启用</a-checkbox>
+              <a-checkbox v-model:checked="settingsForm.embeddedPansou.autoStart">启动时自动开启</a-checkbox>
+              <a-checkbox v-model:checked="settingsForm.embeddedPansou.cache">使用缓存</a-checkbox>
+              <a-checkbox v-model:checked="settingsForm.embeddedPansou.refresh">强制刷新</a-checkbox>
+            </div>
+            <div class="embedded-grid">
+              <label>
+                <span>端口</span>
+                <a-input-number v-model:value="settingsForm.embeddedPansou.port" :min="1024" :max="65535" class="number-input" />
+              </label>
+              <label>
+                <span>来源范围</span>
+                <a-select v-model:value="settingsForm.embeddedPansou.src">
+                  <a-select-option value="all">全部</a-select-option>
+                  <a-select-option value="tg">TG</a-select-option>
+                  <a-select-option value="plugin">插件</a-select-option>
+                </a-select>
+              </label>
+              <label>
+                <span>并发</span>
+                <a-input-number v-model:value="settingsForm.embeddedPansou.concurrency" :min="1" :max="8" class="number-input" />
+              </label>
+            </div>
+            <a-input v-model:value="settingsForm.embeddedPansou.channelsText" placeholder="频道，逗号分隔；留空使用 PanSou 默认频道" />
+            <a-input v-model:value="settingsForm.embeddedPansou.pluginsText" placeholder="插件，逗号分隔；默认已内置常用影视/网盘插件" />
+            <a-input v-model:value="settingsForm.embeddedPansou.cloudTypesText" placeholder="网盘类型，逗号分隔，例如 quark,aliyun,baidu；留空跟随搜索筛选" />
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <div>
+              <h3>自定义 PanSou</h3>
+              <p>连接你自己部署的 PanSou endpoint，可与内置 PanSou 同时搜索。</p>
             </div>
             <a-button @click="addPansouEndpoint">
               <template #icon><Plus :size="16" /></template>
@@ -394,18 +447,18 @@
         <span>正在解析跳转地址</span>
       </div>
       <div v-else-if="detail" class="detail-box">
-        <button class="modal-close" type="button" @click="closeDetail">
-          <X :size="20" />
-        </button>
         <h3>{{ detail.title }}</h3>
         <a :href="detail.url" target="_blank" rel="noreferrer">{{ detail.url }}</a>
         <p v-if="detail.message">{{ detail.message }}</p>
+        <div class="detail-validation" :class="detail.validationStatus">
+          {{ detail.validationMessage }}
+        </div>
         <div class="detail-actions">
           <a-button @click="copyUrl(detail.url)">
             <template #icon><Clipboard :size="16" /></template>
             复制
           </a-button>
-          <a-button type="primary" @click="openUrl(detail.url)">
+          <a-button type="primary" :disabled="!detail.canOpen" @click="openUrl(detail.url)">
             <template #icon><ExternalLink :size="16" /></template>
             打开
           </a-button>
@@ -430,13 +483,13 @@ import {
   RefreshCw,
   Search,
   Settings,
-  Trash2,
-  X
+  Trash2
 } from 'lucide-vue-next'
 import AppNotificationCenter from '../components/AppNotificationCenter.vue'
 import {
   checkAppUpdate,
   formatUpdateError,
+  getEmbeddedPansouStatus,
   getCurrentVersion,
   getSearchSettings,
   getResourceDetail,
@@ -444,11 +497,14 @@ import {
   installAppUpdate,
   listSearchSources,
   openExternalUrl,
+  restartEmbeddedPansou,
   saveSearchSettings,
   searchResources,
   testCmsSources,
   type CmsHealthResult,
   type CmsSourceConfig,
+  type EmbeddedPansouConfig,
+  type EmbeddedPansouStatus,
   type IndexerConfig,
   type PansouEndpointConfig,
   type ResourceDetail,
@@ -468,16 +524,62 @@ type EditablePansouEndpoint = PansouEndpointConfig & {
   cloudTypesText: string
 }
 
+type EditableEmbeddedPansou = EmbeddedPansouConfig & {
+  channelsText: string
+  pluginsText: string
+  cloudTypesText: string
+}
+
 type EditableIndexer = IndexerConfig & {
   categoriesText: string
 }
 
-type EditableSearchSettings = Omit<SearchSettings, 'pansouEndpoints' | 'indexers'> & {
+type EditableSearchSettings = Omit<SearchSettings, 'embeddedPansou' | 'pansouEndpoints' | 'indexers'> & {
+  embeddedPansou: EditableEmbeddedPansou
   pansouEndpoints: EditablePansouEndpoint[]
   indexers: EditableIndexer[]
 }
 
+const DEFAULT_EMBEDDED_PANSOU_PLUGINS = [
+  'labi',
+  'zhizhen',
+  'shandian',
+  'duoduo',
+  'muou',
+  'wanou',
+  'hunhepan',
+  'jikepan',
+  'panwiki',
+  'pansearch',
+  'qupansou',
+  'hdr4k',
+  'pan666',
+  'susu',
+  'fox4k',
+  'pianku',
+  'clmao',
+  'hdmoli',
+  'yuhuage',
+  'xinjuc',
+  'aikanzy'
+]
+
 const DEFAULT_SETTINGS: EditableSearchSettings = {
+  embeddedPansou: {
+    enabled: true,
+    autoStart: true,
+    port: 10323,
+    src: 'all',
+    channels: [],
+    plugins: DEFAULT_EMBEDDED_PANSOU_PLUGINS,
+    cloudTypes: [],
+    refresh: false,
+    cache: true,
+    concurrency: 4,
+    channelsText: '',
+    pluginsText: DEFAULT_EMBEDDED_PANSOU_PLUGINS.join(','),
+    cloudTypesText: ''
+  },
   pansouEndpoint: '',
   pansouToken: '',
   pansouRefresh: false,
@@ -518,6 +620,8 @@ const settingsForm = ref<EditableSearchSettings>(cloneSettings(DEFAULT_SETTINGS)
 const cmsImportText = ref('')
 const cmsTesting = ref(false)
 const cmsHealthResults = ref<CmsHealthResult[]>([])
+const embeddedPansouStatus = ref<EmbeddedPansouStatus>()
+const embeddedPansouRestarting = ref(false)
 const appVersion = ref('')
 const checking = ref(false)
 const installing = ref(false)
@@ -525,8 +629,9 @@ const updateProgress = ref(0)
 const updateStatus = ref('可手动检查 OSS 稳定通道中的新版本')
 
 const enabledCount = computed(() => sources.value.filter((source) => source.enabled).length)
+const embeddedPansouEndpoint = computed(() => `http://127.0.0.1:${settingsForm.value.embeddedPansou.port || 10323}`)
 const sourceGroups = computed(() => {
-  const order = ['公开页面源', '需配置源', 'PanSou 深度池', 'CMS 源池', '外部索引器']
+  const order = ['内置聚合源', '公开页面源', '需配置源', 'PanSou 深度池', 'CMS 源池', '外部索引器']
   const groups = new Map<string, SearchSource[]>()
   for (const source of sources.value) {
     if (!groups.has(source.group)) {
@@ -707,6 +812,27 @@ function sourceLabel(source: SearchSource) {
   return source.group
 }
 
+function sourceGroupSummary(group: { name: string; sources: SearchSource[] }) {
+  if (!lastQuery.value || !states.value.length) {
+    return `${group.sources.filter((source) => source.enabled).length} / ${group.sources.length}`
+  }
+  const groupStates = states.value.filter((state) => state.group === group.name)
+  const count = groupStates.reduce((sum, state) => sum + state.count, 0)
+  const failed = groupStates.filter((state) => state.status === 'failed').length
+  if (loading.value) {
+    return `已返回 ${count} 条`
+  }
+  return failed ? `返回 ${count} 条，失败 ${failed} 个` : `返回 ${count} 条`
+}
+
+function statusMessage(state: SourceSearchState) {
+  if (loading.value && state.status === 'empty') return '正在检索'
+  if (state.status === 'success') return '资源可访问'
+  if (state.status === 'failed') return '资源暂时无法访问，请稍后重试'
+  if (state.status === 'disabled') return '来源未启用'
+  return '未返回匹配结果'
+}
+
 async function openDetail(item: ResourceItem) {
   detailOpen.value = true
   detailLoading.value = true
@@ -738,6 +864,7 @@ async function openUrl(url: string) {
 async function loadSettings() {
   try {
     settingsForm.value = toEditableSettings(await getSearchSettings())
+    await refreshEmbeddedPansouStatus()
   } catch {
     settingsForm.value = cloneSettings(DEFAULT_SETTINGS)
   }
@@ -745,10 +872,19 @@ async function loadSettings() {
 
 async function refreshSources() {
   sources.value = await listSearchSources(settingsForm.value)
+  await refreshEmbeddedPansouStatus()
   const enabledIds = sources.value.filter((source) => source.enabled).map((source) => source.id)
   selectedSourceIds.value = selectedSourceIds.value.filter((id) => enabledIds.includes(id))
   if (!selectedSourceIds.value.length) {
     selectedSourceIds.value = enabledIds
+  }
+}
+
+async function refreshEmbeddedPansouStatus() {
+  try {
+    embeddedPansouStatus.value = await getEmbeddedPansouStatus()
+  } catch {
+    embeddedPansouStatus.value = undefined
   }
 }
 
@@ -762,6 +898,7 @@ async function saveSettingsPanel() {
   settingsSaving.value = true
   try {
     settingsForm.value = toEditableSettings(await saveSearchSettings(serializeSettings(settingsForm.value)))
+    await refreshEmbeddedPansouStatus()
     await refreshSources()
     settingsOpen.value = false
     message.success('搜索来源设置已保存')
@@ -769,6 +906,23 @@ async function saveSettingsPanel() {
     message.error(String(error))
   } finally {
     settingsSaving.value = false
+  }
+}
+
+async function handleRestartEmbeddedPansou() {
+  embeddedPansouRestarting.value = true
+  try {
+    embeddedPansouStatus.value = await restartEmbeddedPansou(serializeSettings(settingsForm.value))
+    await refreshSources()
+    if (embeddedPansouStatus.value.running) {
+      message.success('内置 PanSou 已就绪')
+    } else {
+      message.warning(embeddedPansouStatus.value.message)
+    }
+  } catch (error) {
+    message.error(String(error))
+  } finally {
+    embeddedPansouRestarting.value = false
   }
 }
 
@@ -862,8 +1016,18 @@ function coverageRate(item: SourceCoverage) {
 }
 
 function toEditableSettings(settings: SearchSettings): EditableSearchSettings {
+  const embeddedPansou = settings.embeddedPansou || DEFAULT_SETTINGS.embeddedPansou
   return {
     ...settings,
+    embeddedPansou: {
+      ...embeddedPansou,
+      port: embeddedPansou.port || 10323,
+      src: embeddedPansou.src || 'all',
+      plugins: embeddedPansou.plugins?.length ? embeddedPansou.plugins : DEFAULT_EMBEDDED_PANSOU_PLUGINS,
+      channelsText: (embeddedPansou.channels || []).join(','),
+      pluginsText: (embeddedPansou.plugins?.length ? embeddedPansou.plugins : DEFAULT_EMBEDDED_PANSOU_PLUGINS).join(','),
+      cloudTypesText: (embeddedPansou.cloudTypes || []).join(',')
+    },
     pansouEndpoints: (settings.pansouEndpoints || []).map((endpoint) => ({
       ...endpoint,
       src: endpoint.src || 'all',
@@ -883,6 +1047,18 @@ function toEditableSettings(settings: SearchSettings): EditableSearchSettings {
 }
 
 function serializeSettings(settings: EditableSearchSettings): SearchSettings {
+  const embeddedPansou: EmbeddedPansouConfig = {
+    enabled: settings.embeddedPansou.enabled,
+    autoStart: settings.embeddedPansou.autoStart,
+    port: settings.embeddedPansou.port || 10323,
+    src: settings.embeddedPansou.src || 'all',
+    channels: splitList(settings.embeddedPansou.channelsText),
+    plugins: splitList(settings.embeddedPansou.pluginsText),
+    cloudTypes: splitList(settings.embeddedPansou.cloudTypesText),
+    refresh: settings.embeddedPansou.refresh,
+    cache: settings.embeddedPansou.cache !== false,
+    concurrency: settings.embeddedPansou.concurrency || 4
+  }
   const pansouEndpoints: PansouEndpointConfig[] = settings.pansouEndpoints.map((endpoint) => ({
     id: endpoint.id,
     name: endpoint.name,
@@ -908,6 +1084,7 @@ function serializeSettings(settings: EditableSearchSettings): SearchSettings {
   const cmsSources: CmsSourceConfig[] = settings.cmsSources.map((source) => ({ ...source }))
   return {
     ...settings,
+    embeddedPansou,
     pansouEndpoint: pansouEndpoints[0]?.endpoint || '',
     pansouToken: pansouEndpoints[0]?.token || '',
     pansouRefresh: settings.pansouRefresh,
@@ -958,7 +1135,9 @@ function escapeHtml(text: string) {
 .workbench {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
   background:
     radial-gradient(circle at 18% 12%, rgba(139, 205, 195, 0.18), transparent 30%),
     linear-gradient(135deg, #0b1220 0%, #101b2a 45%, #f4f7f6 45.2%, #f4f7f6 100%);
@@ -969,6 +1148,7 @@ function escapeHtml(text: string) {
   flex-direction: column;
   align-items: center;
   gap: 18px;
+  min-height: 0;
   padding: 22px 12px;
   background: #0d1624;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
@@ -1005,16 +1185,19 @@ function escapeHtml(text: string) {
 }
 
 .stage {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 16px;
   min-width: 0;
-  padding: 30px 34px 42px;
-  overflow: auto;
+  min-height: 0;
+  padding: 30px 34px;
+  overflow: hidden;
 }
 
 .hero {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 28px;
   color: #f7fbff;
 }
 
@@ -1071,6 +1254,13 @@ function escapeHtml(text: string) {
   padding: 24px;
 }
 
+.output-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-gutter: stable;
+}
+
 .search-line {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 118px;
@@ -1096,6 +1286,7 @@ function escapeHtml(text: string) {
 .source-group-title {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 12px;
   color: #718196;
   font-size: 13px;
@@ -1104,6 +1295,10 @@ function escapeHtml(text: string) {
 .source-group-title span {
   color: #334155;
   font-weight: 700;
+}
+
+.source-group-title small {
+  flex: 0 0 auto;
 }
 
 .source-strip {
@@ -1172,7 +1367,7 @@ function escapeHtml(text: string) {
 
 .status-card {
   display: grid;
-  grid-template-columns: 20px 1fr auto;
+  grid-template-columns: 20px minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   padding: 12px;
@@ -1182,7 +1377,7 @@ function escapeHtml(text: string) {
 }
 
 .status-card small {
-  grid-column: 2 / 4;
+  grid-column: 2;
   color: #718196;
 }
 
@@ -1330,7 +1525,6 @@ function escapeHtml(text: string) {
 }
 
 .result-shell {
-  margin-top: 16px;
   padding: 22px 24px;
 }
 
@@ -1546,6 +1740,55 @@ function escapeHtml(text: string) {
   align-items: center;
 }
 
+.embedded-pansou-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.embedded-status {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  color: #64748b;
+  background: #ffffff;
+  border: 1px solid #e4eaef;
+  border-radius: 8px;
+}
+
+.embedded-status.running {
+  color: #0f9489;
+  border-color: #9de1d9;
+}
+
+.embedded-status strong,
+.embedded-status small {
+  display: block;
+}
+
+.embedded-status small {
+  margin-top: 3px;
+  color: #718196;
+}
+
+.embedded-status > span {
+  color: #718196;
+  font-size: 12px;
+}
+
+.embedded-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.embedded-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 110px minmax(140px, 1fr) 100px;
+}
+
 .pool-list {
   display: grid;
   gap: 10px;
@@ -1658,20 +1901,6 @@ function escapeHtml(text: string) {
   padding-top: 8px;
 }
 
-.modal-close {
-  position: absolute;
-  top: -54px;
-  right: -4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-}
-
 .detail-box h3 {
   margin: 0 0 12px;
   font-size: 20px;
@@ -1688,6 +1917,31 @@ function escapeHtml(text: string) {
 .detail-box p {
   margin: 14px 0 0;
   color: #718196;
+}
+
+.detail-validation {
+  margin-top: 14px;
+  padding: 10px 12px;
+  line-height: 1.5;
+  border-radius: 8px;
+}
+
+.detail-validation.valid {
+  color: #0a6f6b;
+  background: #e6f8f5;
+  border: 1px solid #bce7e1;
+}
+
+.detail-validation.warning {
+  color: #8a5a08;
+  background: #fff7e8;
+  border: 1px solid #f0d199;
+}
+
+.detail-validation.invalid {
+  color: #b73c3c;
+  background: #fff2f2;
+  border: 1px solid #ffc9c9;
 }
 
 .detail-actions {

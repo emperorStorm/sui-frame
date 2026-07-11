@@ -7,3 +7,4 @@ target/
 output/
 desktop-client/dist/
 tauri-desktop/src-tauri/target/
+tauri-desktop/src-tauri/binaries/pansou-sidecar-*
