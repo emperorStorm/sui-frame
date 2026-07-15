@@ -45,6 +45,7 @@ npm run tauri:build
 ## Features
 
 - Desktop search workbench with a main keyword box, source selection, disk-type filter, and exact-match option.
+- Local sign-in caches only the username, display name, and login time with no expiration; sign-out or clearing app data requires signing in again.
 - Media entity recognition that normalizes mixed keywords into more accurate media search terms before resource search.
 - Built-in Rust search adapters for public page parsing, result normalization, and link handoff.
 - Four-layer resource pool: PanSou endpoint pool, CMS V10 source pool, Torznab/Newznab indexers, and local rule plugins under `rules/sources/*.json`.
@@ -62,7 +63,8 @@ npm run tauri:build
 ## Current Boundaries
 
 - The first version is a local personal desktop app and does not connect to a private server.
-- No account system, no mobile app implementation, and no server-side persistence are included in v1.
+- Authentication is local to the desktop client; v1 includes no server-side account system, mobile app implementation, or server-side persistence.
+- The local sign-in cache stores no password, token, or expiration value. Signing out is the only in-app way to clear it.
 - The app does not store user disk accounts, cookies, or private tokens.
 - The app does not ship random public PanSou services, CMS sources, trackers, or indexers. Built-in public page sources only perform search, parsing, and link handoff.
 - sui-frame only discovers, indexes, and opens user-visible links. It does not download content, bypass payment, DRM, or access controls.

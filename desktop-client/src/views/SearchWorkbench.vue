@@ -723,6 +723,7 @@ const DEFAULT_SETTINGS: EditableSearchSettings = {
 }
 
 const EMBEDDED_PANSOU_SOURCE_ID = 'embedded-pansou'
+const USER_SESSION_STORAGE_KEY = 'sui-frame:user-session'
 
 const query = ref('')
 const lastQuery = ref('')
@@ -746,7 +747,7 @@ const targetResourceCount = ref(0)
 const targetResourceMessage = ref('')
 const searchElapsedMs = ref(0)
 const detail = ref<ResourceDetail>()
-const currentUser = ref<UserSession>()
+const currentUser = ref<UserSession | undefined>(loadCachedUserSession())
 const loginForm = ref({ username: 'admin', password: '123456' })
 const favorites = ref<FavoriteResource[]>([])
 const favoriteLoadingIds = ref<string[]>([])
@@ -814,6 +815,9 @@ const resultHint = computed(() => {
 onMounted(async () => {
   try {
     await loadCurrentVersion()
+    if (currentUser.value) {
+      await initializeWorkbench()
+    }
   } catch (error) {
     message.error(String(error))
   }
@@ -837,11 +841,14 @@ async function handleLogin() {
   }
   loginLoading.value = true
   try {
-    currentUser.value = await loginUser(username, password)
+    const userSession = await loginUser(username, password)
+    currentUser.value = userSession
+    saveCachedUserSession(userSession)
     await initializeWorkbench()
     message.success(`欢迎回来，${currentUser.value.displayName}`)
   } catch (error) {
     currentUser.value = undefined
+    clearCachedUserSession()
     message.error(String(error))
   } finally {
     loginLoading.value = false
@@ -856,6 +863,7 @@ async function initializeWorkbench() {
 }
 
 function handleLogout() {
+  clearCachedUserSession()
   currentUser.value = undefined
   favorites.value = []
   items.value = []
@@ -865,6 +873,47 @@ function handleLogout() {
   detail.value = undefined
   detailOpen.value = false
   activeView.value = 'search'
+}
+
+function loadCachedUserSession(): UserSession | undefined {
+  try {
+    const raw = localStorage.getItem(USER_SESSION_STORAGE_KEY)
+    if (!raw) return undefined
+    const cachedSession = JSON.parse(raw) as Partial<UserSession>
+    if (!isUserSession(cachedSession)) {
+      clearCachedUserSession()
+      return undefined
+    }
+    return {
+      username: cachedSession.username,
+      displayName: cachedSession.displayName,
+      loginAt: cachedSession.loginAt
+    }
+  } catch {
+    clearCachedUserSession()
+    return undefined
+  }
+}
+
+function saveCachedUserSession(userSession: UserSession) {
+  const cachedSession: UserSession = {
+    username: userSession.username,
+    displayName: userSession.displayName,
+    loginAt: userSession.loginAt
+  }
+  localStorage.setItem(USER_SESSION_STORAGE_KEY, JSON.stringify(cachedSession))
+}
+
+function clearCachedUserSession() {
+  localStorage.removeItem(USER_SESSION_STORAGE_KEY)
+}
+
+function isUserSession(value: Partial<UserSession>): value is UserSession {
+  return Boolean(
+    value.username?.trim() &&
+    value.displayName?.trim() &&
+    value.loginAt?.trim()
+  )
 }
 
 async function loadFavorites() {
