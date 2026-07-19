@@ -51,7 +51,7 @@ jobs:
             version="${BASH_REMATCH[2]}"
             body="$(printf '%s\n' "$message" | sed '1d' | sed '/./,$!d')"
             if [[ -z "${body//[[:space:]]/}" ]]; then
-              body="自动打包发布影岁桌面端，包含 macOS 和 Windows 安装包。"
+              body="自动打包发布影岁桌面端，包含 Apple Silicon、Intel Mac 和 Windows 安装包。"
             fi
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "should_sync_assets=true" >> "$GITHUB_OUTPUT"
@@ -81,9 +81,15 @@ jobs:
         include:
           - platform: macos-latest
             args: --target aarch64-apple-darwin
+            rust_target: aarch64-apple-darwin
             pansou_target: darwin-arm64
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            rust_target: x86_64-apple-darwin
+            pansou_target: darwin-x64
           - platform: windows-latest
             args: --bundles nsis
+            rust_target: ''
             pansou_target: win32-x64
     runs-on: ${{ matrix.platform }}
     steps:
@@ -144,7 +150,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+          targets: ${{ matrix.rust_target }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -274,16 +280,26 @@ jobs:
 
           const assets = fs.readdirSync(dir);
           const findAsset = pattern => assets.find(name => pattern.test(name));
-          const macUpdate = findAsset(/aarch64\.app\.tar\.gz$/);
+          const macArmUpdate = findAsset(/aarch64\.app\.tar\.gz$/);
+          const macIntelUpdate = findAsset(/(?:x86_64|x64)\.app\.tar\.gz$/);
           const winUpdate = findAsset(/x64-setup\.exe$/);
 
-          if (!macUpdate || !winUpdate) {
-            throw new Error(`Missing updater assets. mac=${macUpdate || ''}, win=${winUpdate || ''}`);
+          if (!macArmUpdate || !macIntelUpdate || !winUpdate) {
+            throw new Error(`Missing updater assets. macArm=${macArmUpdate || ''}, macIntel=${macIntelUpdate || ''}, win=${winUpdate || ''}`);
           }
 
           for (const key of ['darwin-aarch64', 'darwin-aarch64-app']) {
             if (latest.platforms[key]) {
-              latest.platforms[key].url = `${baseUrl}/${versionDir}/${macUpdate}`;
+              latest.platforms[key].url = `${baseUrl}/${versionDir}/${macArmUpdate}`;
+            }
+          }
+          const macIntelKeys = ['darwin-x86_64', 'darwin-x86_64-app'];
+          if (!macIntelKeys.some((key) => latest.platforms[key])) {
+            throw new Error('Missing Intel macOS updater metadata.');
+          }
+          for (const key of macIntelKeys) {
+            if (latest.platforms[key]) {
+              latest.platforms[key].url = `${baseUrl}/${versionDir}/${macIntelUpdate}`;
             }
           }
           for (const key of ['windows-x86_64', 'windows-x86_64-nsis']) {

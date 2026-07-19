@@ -14,6 +14,12 @@ const targets = {
     goarch: 'arm64',
     ext: ''
   },
+  'darwin-x64': {
+    triple: 'x86_64-apple-darwin',
+    goos: 'darwin',
+    goarch: 'amd64',
+    ext: ''
+  },
   'win32-x64': {
     triple: 'x86_64-pc-windows-msvc',
     goos: 'windows',
