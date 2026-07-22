@@ -238,7 +238,7 @@ export function isTauriRuntime() {
 
 function invoke<T>(command: string, args?: Parameters<typeof tauriInvoke>[1]) {
   if (!isTauriRuntime()) {
-    return Promise.reject(new Error('当前页面需要在影岁桌面客户端中运行，请通过 Tauri 开发模式或已安装的桌面应用打开。'))
+    return Promise.reject(new Error('当前页面需要在岁影桌面客户端中运行，请通过 Tauri 开发模式或已安装的桌面应用打开。'))
   }
   return tauriInvoke<T>(command, args)
 }

@@ -1,12 +1,12 @@
 [package]
-name = "sui-frame-desktop"
-version = "0.1.7"
-description = "影岁桌面客户端"
+name = "suivision-desktop"
+version = "0.2.1"
+description = "岁影桌面客户端"
 authors = ["wangjun"]
 edition = "2021"
 
 [lib]
-name = "sui_frame_desktop_lib"
+name = "suivision_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

@@ -1,13 +1,13 @@
-# sui-frame
+# SuiVision
 
 [中文说明](README.zh-CN.md)
 
-sui-frame is a local-first desktop app for searching video-related resource links across multiple public disk-search sources. The first version focuses on a personal desktop workflow on Windows and macOS, with implementation centered on the desktop frontend and Tauri desktop shell. Mobile and server directories are reserved but not implemented.
+SuiVision is a local-first desktop app for searching video-related resource links across multiple public disk-search sources. The first version focuses on a personal desktop workflow on Windows and macOS, with implementation centered on the desktop frontend and Tauri desktop shell. Mobile and server directories are reserved but not implemented.
 
 ## Structure
 
 ```text
-sui-frame/
+SuiVision/
 ├── desktop-client/   # Vue 3 + TypeScript desktop frontend
 ├── tauri-desktop/    # Tauri 2 desktop shell and Rust search adapters
 ├── mobile-client/    # Reserved mobile client directory
@@ -67,7 +67,7 @@ npm run tauri:build
 - The local sign-in cache stores no password, token, or expiration value. Signing out is the only in-app way to clear it.
 - The app does not store user disk accounts, cookies, or private tokens.
 - The app does not ship random public PanSou services, CMS sources, trackers, or indexers. Built-in public page sources only perform search, parsing, and link handoff.
-- sui-frame only discovers, indexes, and opens user-visible links. It does not download content, bypass payment, DRM, or access controls.
+- SuiVision only discovers, indexes, and opens user-visible links. It does not download content, bypass payment, DRM, or access controls.
 - Search quality depends on external public sites. Network blocking, anti-crawling rules, HTML changes, and source downtime may affect results.
 - The TMDB API Key field enables optional `search/multi` media-candidate enrichment. Without a key, local media rules and resource sources still work.
 

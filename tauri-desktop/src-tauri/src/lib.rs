@@ -4350,7 +4350,7 @@ pub fn run() {
             open_external_url
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build sui-frame desktop app")
+        .expect("failed to build suivision desktop app")
         .run(|app, event| {
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
                 stop_owned_embedded_pansou(app, "应用已退出，内置 PanSou 已停止");
@@ -4850,7 +4850,7 @@ mod tests {
     fn unique_temp_path(prefix: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "sui-frame-{}-{}-{}.json",
+            "suivision-{}-{}-{}.json",
             prefix,
             current_timestamp_millis(),
             stable_hash(prefix)

@@ -12,7 +12,7 @@ on:
         type: string
 
 env:
-  OSS_PROJECT_PREFIX: sui-frame
+  OSS_PROJECT_PREFIX: suivision
 
 jobs:
   detect-version:
@@ -51,7 +51,7 @@ jobs:
             version="${BASH_REMATCH[2]}"
             body="$(printf '%s\n' "$message" | sed '1d' | sed '/./,$!d')"
             if [[ -z "${body//[[:space:]]/}" ]]; then
-              body="自动打包发布影岁桌面端，包含 Apple Silicon、Intel Mac 和 Windows 安装包。"
+              body="自动打包发布岁影桌面端，包含 Apple Silicon、Intel Mac 和 Windows 安装包。"
             fi
             echo "should_release=true" >> "$GITHUB_OUTPUT"
             echo "should_sync_assets=true" >> "$GITHUB_OUTPUT"
@@ -210,7 +210,7 @@ jobs:
           projectPath: tauri-desktop
           tauriScript: npm run tauri
           tagName: ${{ needs.detect-version.outputs.tag }}
-          releaseName: 影岁 ${{ needs.detect-version.outputs.tag }}
+          releaseName: 岁影 ${{ needs.detect-version.outputs.tag }}
           releaseBody: ${{ needs.detect-version.outputs.release_body }}
           releaseDraft: false
           prerelease: false

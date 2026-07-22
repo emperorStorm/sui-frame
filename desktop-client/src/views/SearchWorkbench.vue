@@ -2,9 +2,9 @@
   <main v-if="!currentUser" class="login-shell">
     <section class="login-panel">
       <div class="login-brand">
-        <img src="../assets/brand/sui-frame-icon.svg" alt="影岁" />
+        <img src="../assets/brand/suivision-icon.svg" alt="岁影" />
         <div>
-          <p>影岁</p>
+          <p>岁影</p>
           <h1>登录资源工作台</h1>
         </div>
       </div>
@@ -36,7 +36,7 @@
   <main v-else class="workbench">
     <aside class="rail">
       <div class="brand-mark">
-        <img src="../assets/brand/sui-frame-icon.svg" alt="影岁" />
+        <img src="../assets/brand/suivision-icon.svg" alt="岁影" />
       </div>
       <a-tooltip title="资源搜索">
         <button class="rail-button" :class="{ active: activeView === 'search' }" type="button" @click="activeView = 'search'">
@@ -70,9 +70,9 @@
     <section class="stage">
       <header class="hero">
         <div class="hero-title">
-          <img src="../assets/brand/sui-frame-icon.svg" alt="影岁" />
+          <img src="../assets/brand/suivision-icon.svg" alt="岁影" />
           <div>
-            <p>影岁</p>
+            <p>岁影</p>
             <h1>{{ activeViewTitle }}</h1>
           </div>
         </div>
@@ -381,7 +381,7 @@
           <div class="settings-section-head">
             <div>
               <h3>内置 PanSou</h3>
-              <p>{{ embeddedPansouStatus?.message || '随影岁启动的本地聚合搜索服务。' }}</p>
+              <p>{{ embeddedPansouStatus?.message || '随岁影启动的本地聚合搜索服务。' }}</p>
             </div>
           </div>
           <div class="embedded-pansou-panel">
@@ -391,7 +391,7 @@
                 <strong>{{ embeddedPansouStatus?.running ? '运行中' : '未运行' }}</strong>
                 <small>{{ settingsForm.embeddedPansou.enabled ? embeddedPansouEndpoint : '已关闭' }}</small>
               </div>
-              <span>{{ embeddedPansouStatus?.reused ? '复用本机服务' : '影岁托管' }}</span>
+              <span>{{ embeddedPansouStatus?.reused ? '复用本机服务' : '岁影托管' }}</span>
             </div>
             <div class="embedded-controls">
               <a-checkbox v-model:checked="settingsForm.embeddedPansou.enabled">启用</a-checkbox>
@@ -723,7 +723,7 @@ const DEFAULT_SETTINGS: EditableSearchSettings = {
 }
 
 const EMBEDDED_PANSOU_SOURCE_ID = 'embedded-pansou'
-const USER_SESSION_STORAGE_KEY = 'sui-frame:user-session'
+const USER_SESSION_STORAGE_KEY = 'suivision:user-session'
 
 const query = ref('')
 const lastQuery = ref('')

@@ -61,7 +61,7 @@ import {
   isTauriRuntime
 } from '../api/native'
 
-const STORAGE_KEY = 'sui_frame_notifications'
+const STORAGE_KEY = 'suivision_notifications'
 const UPDATE_NOTIFICATION_PREFIX = 'app-update:'
 
 type AvailableUpdate = NonNullable<UpdateCheckResult['update']>

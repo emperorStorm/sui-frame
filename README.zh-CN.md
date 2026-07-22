@@ -1,13 +1,13 @@
-# 影岁
+# 岁影
 
 [English](README.md)
 
-影岁是一个本地优先的桌面端影视资源检索工具。首版面向个人使用，主要支持 Windows 与 macOS 桌面端，正式实现集中在 `desktop-client/` 与 `tauri-desktop/`，移动端和服务端暂时只保留占位目录。
+岁影是一个本地优先的桌面端影视资源检索工具。首版面向个人使用，主要支持 Windows 与 macOS 桌面端，正式实现集中在 `desktop-client/` 与 `tauri-desktop/`，移动端和服务端暂时只保留占位目录。
 
 ## 目录
 
 ```text
-sui-frame/
+SuiVision/
 ├── desktop-client/   # Vue 3 + TypeScript 桌面前端
 ├── tauri-desktop/    # Tauri 2 桌面壳与 Rust 搜索适配器
 ├── mobile-client/    # 移动端预留目录

@@ -1,6 +1,6 @@
 {
-  "name": "sui-frame-tauri-desktop",
-  "version": "0.1.7",
+  "name": "suivision-tauri-desktop",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "scripts": {

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "影岁",
-  "version": "0.1.7",
-  "identifier": "fun.upup.suiframe",
+  "productName": "岁影",
+  "version": "0.2.1",
+  "identifier": "fun.upup.suivision",
   "build": {
     "beforeDevCommand": "cd ../desktop-client && npm run dev",
     "devUrl": "http://127.0.0.1:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "影岁",
+        "title": "岁影",
         "width": 1280,
         "height": 860,
         "minWidth": 1080,
@@ -44,7 +44,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzRkI5RTdGNUEyRUIzQTYKUldTbXN5NWFmNTc3b3pIRDdoR1pzdlhyREdoY2hIRXhyUzRFTzkwa3ExWlNDU281T0pPbkFsZlMK",
       "endpoints": [
-        "https://suisui-package.oss-cn-hangzhou.aliyuncs.com/sui-frame/latest.json"
+        "https://suisui-package.oss-cn-hangzhou.aliyuncs.com/suivision/latest.json"
       ],
       "windows": {
         "installMode": "passive"

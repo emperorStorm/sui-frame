@@ -120,7 +120,7 @@ try {
     }
   } else {
     mkdirSync(outputDir, { recursive: true })
-    tempDir = mkdtempSync(join(tmpdir(), 'sui-frame-pansou-'))
+    tempDir = mkdtempSync(join(tmpdir(), 'suivision-pansou-'))
     const sourceDir = join(tempDir, 'pansou')
     run('git', ['clone', '--depth', '1', '--branch', PANSOU_REF, PANSOU_REPO, sourceDir])
     for (const key of targetKeys) {

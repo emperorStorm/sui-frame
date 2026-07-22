@@ -1,6 +1,6 @@
 {
-  "name": "sui-frame-desktop-client",
-  "version": "0.1.7",
+  "name": "suivision-desktop-client",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "scripts": {
